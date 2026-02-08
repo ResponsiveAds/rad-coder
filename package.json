@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "node bin/cli.js",
-    "server": "node server/index.js",
+    "server": "node server/index.js"
   },
   "files": [
     "bin/",
