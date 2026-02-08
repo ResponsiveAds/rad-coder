@@ -174,9 +174,9 @@ async function fetchCreativeConfig(creativeId) {
       flowlineName: fl.name || 'Unknown',
       sizes: sizes,
       isFluid: fl.fullyFluid || false,
-      adSource: '//publish.responsiveads.com/ads/',
-      flSource: '//publish.responsiveads.com/flowlines/',
-      radicalScript: 'https://publish.responsiveads.com/libs/radical.r8.min.js',
+      adSource: '//edit.responsiveads.com/ads/',
+      flSource: '//edit.responsiveads.com/flowlines/',
+      radicalScript: 'https://studio.responsiveads.com/js/libs/radical.min.js',
       server: {
         port: 3000,
         host: 'localhost'
