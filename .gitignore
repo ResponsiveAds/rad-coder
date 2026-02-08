@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts
+dist/
+build/
+
+# Test artifacts
+.playwright-mcp/
+test-results/
+playwright-report/
+
+# Package lock (use npm ci for reproducible builds)
+package-lock.json

@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ad Creative Tester</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      min-height: 100vh;
+    }
+    
+    .toolbar {
+      background: #16213e;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      border-bottom: 1px solid #0f3460;
+    }
+    
+    .toolbar h1 {
+      color: #e94560;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    
+    .toolbar .status {
+      color: #4ecca3;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    
+    .toolbar .status::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      background: #4ecca3;
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .toolbar .creative-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    
+    .toolbar .creative-id {
+      color: #a0a0a0;
+      font-size: 12px;
+      font-family: monospace;
+    }
+    
+    .toolbar .flowline-name {
+      color: #7ec8e3;
+      font-size: 11px;
+    }
+    
+    .toolbar .reload-btn {
+      margin-left: auto;
+      background: #0f3460;
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    
+    .toolbar .reload-btn:hover {
+      background: #e94560;
+    }
+    
+    .ad-container {
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    
+    .ad-wrapper {
+      background: #fff;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+    }
+    
+    .inner-content {
+      width: 100%;
+      min-height: 300px;
+    }
+    
+    /* Toast notification for reload */
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #4ecca3;
+      color: #1a1a2e;
+      padding: 12px 20px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all 0.3s ease;
+    }
+    
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <h1>Ad Creative Tester</h1>
+    <span class="status">Hot-reload active</span>
+    <div class="creative-info">
+      <span class="creative-id" id="creative-id">Loading...</span>
+      <span class="flowline-name" id="flowline-name"></span>
+    </div>
+    <button class="reload-btn" onclick="location.reload()">Reload</button>
+  </div>
+  
+  <div class="ad-container">
+    <div class="ad-wrapper">
+      <div class="inner-content" id="ad-content">
+        <!-- Ad will be loaded here -->
+      </div>
+    </div>
+  </div>
+  
+  <div class="toast" id="toast">Reloading...</div>
+
+  <script>
+    // Fetch config with retry (server may still be fetching from studio)
+    async function fetchConfigWithRetry(maxRetries = 10, delay = 500) {
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          const response = await fetch('/api/config');
+          if (response.status === 503) {
+            // Server not ready yet, retry
+            console.log(`Config not ready, retrying (${i + 1}/${maxRetries})...`);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          return await response.json();
+        } catch (error) {
+          if (i === maxRetries - 1) throw error;
+          console.log(`Fetch failed, retrying (${i + 1}/${maxRetries})...`);
+          await new Promise(r => setTimeout(r, delay));
+        }
+      }
+      throw new Error('Max retries exceeded');
+    }
+    
+    // Fetch config and initialize ad
+    async function init() {
+      try {
+        // Show loading state
+        document.getElementById('creative-id').textContent = 'Loading...';
+        
+        const config = await fetchConfigWithRetry();
+        
+        // Update UI
+        document.getElementById('creative-id').textContent = `ID: ${config.creativeId}`;
+        document.getElementById('flowline-name').textContent = `Flowline: ${config.flowlineName}`;
+        
+        // Initialize Radical ad (async - fetches custom JS code)
+        await loadAd(config);
+        
+        // Setup hot-reload WebSocket
+        setupHotReload();
+        
+      } catch (error) {
+        console.error('Failed to load config:', error);
+        document.getElementById('ad-content').innerHTML = 
+          '<p style="padding: 20px; color: red;">Failed to load configuration</p>';
+      }
+    }
+    
+    async function loadAd(config) {
+      const container = document.getElementById('ad-content');
+      const id = config.creativeId;
+      
+      // Create the ad insertion point
+      const ins = document.createElement('ins');
+      ins.id = `responsivead-${id}`;
+      container.innerHTML = '';
+      container.appendChild(ins);
+      
+      // Initialize Radical
+      window.Radical = window.Radical || [];
+      
+      // Fetch the custom JS code from server
+      let customJsCode = '';
+      try {
+        const response = await fetch('/api/custom-js');
+        const data = await response.json();
+        customJsCode = data.code || '';
+        console.log('Custom JS code loaded:', customJsCode.substring(0, 100) + '...');
+      } catch (error) {
+        console.error('Failed to load custom JS:', error);
+      }
+      
+      // Push the ad configuration with customjs as inline code string
+      Radical.push([id, {
+        https: true,
+        flowline: config.flowlineId,
+        sizes: config.sizes,
+        adSource: config.adSource,
+        tracking: false,
+        isFluid: config.isFluid,
+        screenshot: false,
+        crossOrigin: true,
+        flSource: config.flSource,
+        config: { 
+          _default: { 
+            selectedVariant: '', 
+            customjs: customJsCode  // Inline JS code string (not URL)
+          } 
+        }
+      }]);
+      
+      // Load the Radical script if not already loaded
+      if (!document.querySelector('script[src*="radical.min.js"]')) {
+        const script = document.createElement('script');
+        script.src = config.radicalScript;
+        document.body.appendChild(script);
+      }
+      
+      console.log('Ad loaded with customjs code injected');
+    }
+    
+    function setupHotReload() {
+      const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${wsProtocol}//${location.host}`);
+      
+      ws.onopen = () => {
+        console.log('Hot-reload connected');
+      };
+      
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'reload') {
+          showToast('Reloading...');
+          // Small delay to show the toast
+          setTimeout(() => {
+            location.reload();
+          }, 300);
+        }
+      };
+      
+      ws.onclose = () => {
+        console.log('Hot-reload disconnected, reconnecting...');
+        // Try to reconnect after a delay
+        setTimeout(setupHotReload, 2000);
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+    }
+    
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2000);
+    }
+    
+    // Initialize on page load
+    init();
+  </script>
+</body>
+</html>
