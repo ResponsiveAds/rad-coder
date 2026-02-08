@@ -19,32 +19,93 @@ const packageDir = process.env.RAD_CODER_PACKAGE_DIR || path.join(__dirname, '..
 // CLI Argument Parsing
 // ============================================================
 
-const input = process.argv[2];
+// Check if we're being required as a module (from cli.js) or run directly
+const isModule = require.main !== module;
 
-if (!input) {
-  console.error('\n Usage: npx rad-coder <creativeId or previewUrl>\n');
-  console.error(' Examples:');
-  console.error('   npx rad-coder 697b80fcc6e904025f5147a0');
-  console.error('   npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a0/preview\n');
-  process.exit(1);
+let creativeId = null;
+
+if (!isModule) {
+  const input = process.argv[2];
+
+  if (!input) {
+    console.error('\n Usage: npx rad-coder <creativeId or previewUrl>\n');
+    console.error(' Examples:');
+    console.error('   npx rad-coder 697b80fcc6e904025f5147a0');
+    console.error('   npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a0/preview\n');
+    process.exit(1);
+  }
+
+  /**
+   * Extract creative ID from URL or use directly
+   */
+  function extractCreativeIdLocal(input) {
+    // If it's a URL, extract the ID
+    const urlMatch = input.match(/creatives\/([a-f0-9]+)/i);
+    return urlMatch ? urlMatch[1] : input;
+  }
+
+  creativeId = extractCreativeIdLocal(input);
 }
-
-/**
- * Extract creative ID from URL or use directly
- */
-function extractCreativeId(input) {
-  // If it's a URL, extract the ID
-  const urlMatch = input.match(/creatives\/([a-f0-9]+)/i);
-  return urlMatch ? urlMatch[1] : input;
-}
-
-const creativeId = extractCreativeId(input);
 
 // ============================================================
 // Fetch Creative Config from Studio Preview Page
 // ============================================================
 
 let creativeConfig = null;
+
+/**
+ * Extract a JSON object from HTML using balanced bracket parsing
+ * @param {string} html - The HTML content
+ * @param {string} startMarker - The marker to find (e.g., 'window.creative = ')
+ * @returns {object|null} - Parsed JSON object or null
+ */
+function extractJsonObject(html, startMarker) {
+  const startIdx = html.indexOf(startMarker);
+  if (startIdx === -1) return null;
+  
+  const jsonStart = startIdx + startMarker.length;
+  let braceCount = 0;
+  let inString = false;
+  let escapeNext = false;
+  let endIdx = jsonStart;
+  
+  for (let i = jsonStart; i < html.length; i++) {
+    const char = html[i];
+    
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+    
+    if (char === '\\') {
+      escapeNext = true;
+      continue;
+    }
+    
+    if (char === '"' && !inString) {
+      inString = true;
+    } else if (char === '"' && inString) {
+      inString = false;
+    }
+    
+    if (!inString) {
+      if (char === '{') braceCount++;
+      if (char === '}') braceCount--;
+      
+      if (braceCount === 0 && char === '}') {
+        endIdx = i + 1;
+        break;
+      }
+    }
+  }
+  
+  try {
+    const jsonStr = html.substring(jsonStart, endIdx);
+    return JSON.parse(jsonStr);
+  } catch (err) {
+    return null;
+  }
+}
 
 /**
  * Fetch and parse creative configuration from studio preview page
@@ -66,6 +127,13 @@ async function fetchCreativeConfig(creativeId) {
     // Extract window.creativeId
     const creativeIdMatch = html.match(/window\.creativeId\s*=\s*['"]([^'"]+)['"]/);
     const extractedCreativeId = creativeIdMatch ? creativeIdMatch[1] : creativeId;
+    
+    // Extract window.creative object to get customjs
+    let customjs = null;
+    const creativeObj = extractJsonObject(html, 'window.creative = ');
+    if (creativeObj && creativeObj.config && creativeObj.config.customjs) {
+      customjs = creativeObj.config.customjs;
+    }
     
     // Extract flowlines - try multiple patterns
     let flowlines;
@@ -187,7 +255,9 @@ async function fetchCreativeConfig(creativeId) {
         name: f.name,
         sizes: f.flowline?.sizes || [],
         isFluid: f.fullyFluid
-      }))
+      })),
+      // Custom JS from the creative (if available)
+      customjs: customjs
     };
     
   } catch (error) {
@@ -285,13 +355,17 @@ watcher.on('error', (error) => {
 // Start Server
 // ============================================================
 
-async function start() {
+async function start(prefetchedConfig = null) {
   console.log('\n========================================');
   console.log(' RAD Coder - ResponsiveAds Creative Tester');
   console.log('========================================\n');
   
-  // Fetch creative config from studio
-  creativeConfig = await fetchCreativeConfig(creativeId);
+  // Use pre-fetched config if provided, otherwise fetch it
+  if (prefetchedConfig) {
+    creativeConfig = prefetchedConfig;
+  } else {
+    creativeConfig = await fetchCreativeConfig(creativeId);
+  }
   
   console.log(' Creative Config:');
   console.log(` - Creative ID: ${creativeConfig.creativeId}`);
@@ -299,6 +373,7 @@ async function start() {
   console.log(` - Flowline ID: ${creativeConfig.flowlineId}`);
   console.log(` - Sizes: ${creativeConfig.sizes.join(', ')}`);
   console.log(` - Is Fluid: ${creativeConfig.isFluid}`);
+  console.log(` - Has CustomJS: ${creativeConfig.customjs ? 'Yes' : 'No'}`);
   
   if (creativeConfig.allFlowlines.length > 1) {
     console.log(`\n Available Flowlines (${creativeConfig.allFlowlines.length}):`);
@@ -332,7 +407,20 @@ async function start() {
   });
 }
 
-start();
+// ============================================================
+// Module Exports & Startup
+// ============================================================
+
+// Export functions for use by cli.js
+module.exports = {
+  fetchCreativeConfig,
+  startServer: start
+};
+
+// Only auto-start if run directly (not required as module)
+if (!isModule) {
+  start();
+}
 
 // Graceful shutdown
 process.on('SIGINT', () => {
