@@ -2,7 +2,6 @@
 
 const path = require('path');
 const fs = require('fs');
-const readline = require('readline');
 
 // Get the package root directory
 const packageRoot = path.join(__dirname, '..');
@@ -15,50 +14,142 @@ function extractCreativeId(input) {
 }
 
 /**
- * Prompt user with a question and choices
+ * Prompt user with a question and arrow-key selectable choices
  * @param {string} question - The question to ask
  * @param {string[]} choices - Array of choices
  * @returns {Promise<number>} - The index of the selected choice (0-based)
  */
 function promptUser(question, choices) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
+    let selected = 0;
 
-    console.log(`\n${question}`);
-    choices.forEach((choice, index) => {
-      console.log(`  [${index + 1}] ${choice}`);
-    });
+    // Print question
+    console.log(`\n${question}\n`);
 
-    const ask = () => {
-      rl.question('\nChoice (enter number): ', (answer) => {
-        const num = parseInt(answer, 10);
-        if (num >= 1 && num <= choices.length) {
-          rl.close();
-          resolve(num - 1);
+    function draw() {
+      // Move cursor up to overwrite previous menu lines
+      if (selected !== -1) {
+        process.stdout.write(`\x1B[${choices.length}A`);
+      }
+      for (let i = 0; i < choices.length; i++) {
+        process.stdout.write('\x1B[2K'); // clear line
+        if (i === selected) {
+          process.stdout.write(`  \x1B[36m\x1B[1m❯ ${choices[i]}\x1B[0m\n`);
         } else {
-          console.log(`Please enter a number between 1 and ${choices.length}`);
-          ask();
+          process.stdout.write(`    ${choices[i]}\n`);
         }
-      });
-    };
+      }
+    }
 
-    ask();
+    // Initial draw (set selected to -1 so it doesn't move cursor up first time)
+    const initial = selected;
+    selected = -1;
+    // Print placeholder lines first
+    for (let i = 0; i < choices.length; i++) {
+      process.stdout.write('\n');
+    }
+    // Move back up and draw properly
+    process.stdout.write(`\x1B[${choices.length}A`);
+    selected = initial;
+    draw();
+
+    // Enable raw mode for keypress detection
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+    process.stdin.resume();
+
+    function onData(data) {
+      const key = data.toString();
+
+      // Ctrl+C
+      if (key === '\x03') {
+        cleanup();
+        process.exit(0);
+        return;
+      }
+
+      // Up arrow
+      if (key === '\x1B[A') {
+        selected = Math.max(0, selected - 1);
+        draw();
+        return;
+      }
+
+      // Down arrow
+      if (key === '\x1B[B') {
+        selected = Math.min(choices.length - 1, selected + 1);
+        draw();
+        return;
+      }
+
+      // Enter
+      if (key === '\r' || key === '\n') {
+        cleanup();
+        resolve(selected);
+        return;
+      }
+
+      // Number keys for quick select
+      const num = parseInt(key, 10);
+      if (num >= 1 && num <= choices.length) {
+        selected = num - 1;
+        draw();
+        cleanup();
+        resolve(selected);
+        return;
+      }
+    }
+
+    function cleanup() {
+      process.stdin.removeListener('data', onData);
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode(false);
+      }
+      process.stdin.pause();
+    }
+
+    process.stdin.on('data', onData);
   });
 }
 
-// Get creative ID from command line argument
-const input = process.argv[2];
+// Get creative ID from command line argument (skip flags)
+const args = process.argv.slice(2);
+let input = null;
+let editorFlag = null;
+let noEditor = false;
+
+for (const arg of args) {
+  if (arg.startsWith('--editor=')) {
+    editorFlag = arg.split('=')[1];
+  } else if (arg === '--no-editor') {
+    noEditor = true;
+  } else if (!arg.startsWith('--')) {
+    input = arg;
+  }
+}
+
+// Pass editor preferences via environment variables
+if (editorFlag) {
+  process.env.RAD_CODER_EDITOR = editorFlag;
+}
+if (noEditor) {
+  process.env.RAD_CODER_NO_EDITOR = '1';
+}
+
 const creativeId = extractCreativeId(input);
 
 if (!creativeId) {
-  console.log('Usage: npx rad-coder <creativeId or previewUrl>');
+  console.log('Usage: npx rad-coder <creativeId or previewUrl> [options]');
+  console.log('');
+  console.log('Options:');
+  console.log('  --editor=<cmd>   Set code editor command (default: code)');
+  console.log('  --no-editor      Don\'t auto-open code editor');
   console.log('');
   console.log('Examples:');
   console.log('  npx rad-coder 697b80fcc6e904025f5147a0');
   console.log('  npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a0/preview');
+  console.log('  npx rad-coder 697b80fcc6e904025f5147a0 --editor=cursor');
   process.exit(1);
 }
 

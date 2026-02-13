@@ -5,6 +5,50 @@ const chokidar = require('chokidar');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const { spawn } = require('child_process');
+const TUI = require('./tui');
+
+// ============================================================
+// TUI Instance & Logging
+// ============================================================
+
+let tui = null;
+
+/**
+ * Log a message — routes to TUI scroll area when active, otherwise console.log
+ */
+function log(message) {
+  if (tui && !tui.destroyed) {
+    tui.log(message);
+  } else {
+    console.log(message);
+  }
+}
+
+/**
+ * Open the user's code editor
+ */
+function openEditor() {
+  const editorCmd = process.env.RAD_CODER_EDITOR
+    || process.env.VISUAL
+    || process.env.EDITOR
+    || 'code';
+
+  try {
+    const child = spawn(editorCmd, [userDir], {
+      detached: true,
+      stdio: 'ignore',
+      shell: process.platform === 'win32'
+    });
+    child.unref();
+    child.on('error', (err) => {
+      log(` ✗ Could not open editor "${editorCmd}": ${err.message}`);
+    });
+    log(` Editor (${editorCmd}) opened`);
+  } catch (err) {
+    log(` ✗ Could not open editor "${editorCmd}": ${err.message}`);
+  }
+}
 
 // ============================================================
 // Directory Configuration
@@ -113,8 +157,8 @@ function extractJsonObject(html, startMarker) {
 async function fetchCreativeConfig(creativeId) {
   const previewUrl = `https://studio.responsiveads.com/creatives/${creativeId}/preview`;
   
-  console.log(` Fetching creative config from studio...`);
-  console.log(` URL: ${previewUrl}\n`);
+  log(` Fetching creative config from studio...`);
+  log(` URL: ${previewUrl}\n`);
   
   try {
     const response = await fetch(previewUrl);
@@ -261,7 +305,7 @@ async function fetchCreativeConfig(creativeId) {
     };
     
   } catch (error) {
-    console.error(`\n Failed to fetch creative config: ${error.message}\n`);
+    log(`\n ✗ Failed to fetch creative config: ${error.message}\n`);
     process.exit(1);
   }
 }
@@ -281,11 +325,11 @@ const clients = new Set();
 
 wss.on('connection', (ws) => {
   clients.add(ws);
-  console.log('Browser connected for hot-reload');
+  log(' Browser connected for hot-reload');
   
   ws.on('close', () => {
     clients.delete(ws);
-    console.log('Browser disconnected');
+    log(' Browser disconnected');
   });
 });
 
@@ -341,14 +385,14 @@ const watcher = chokidar.watch(customJsWatchPath, {
   ignoreInitial: true
 });
 
-watcher.on('change', (filePath) => {
-  console.log(`\n File changed: ${path.basename(filePath)}`);
-  console.log(' Reloading browsers...\n');
+watcher.on('change', (changedPath) => {
+  log(` File changed: ${path.basename(changedPath)}`);
+  log(' Reloading browsers...');
   broadcastReload();
 });
 
 watcher.on('error', (error) => {
-  console.error('Watcher error:', error);
+  log(` Watcher error: ${error.message}`);
 });
 
 // ============================================================
@@ -390,7 +434,6 @@ async function start(prefetchedConfig = null) {
     console.log(` Test page: http://${host}:${port}/test.html`);
     console.log(`\n Working directory: ${userDir}`);
     console.log(' Edit custom.js and save to hot-reload\n');
-    console.log(' Press Ctrl+C to stop\n');
     
     // Small delay to ensure server is fully ready before opening browser
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -399,11 +442,152 @@ async function start(prefetchedConfig = null) {
     try {
       const open = (await import('open')).default;
       await open(`http://${host}:${port}/test.html`);
-      console.log(' Browser opened automatically\n');
+      console.log(' Browser opened automatically');
     } catch (err) {
-      console.log(' Could not auto-open browser:', err.message);
-      console.log(` Please open http://${host}:${port}/test.html manually\n`);
+      console.log(` Could not auto-open browser: ${err.message}`);
+      console.log(` Please open http://${host}:${port}/test.html manually`);
     }
+
+    // Auto-open editor (unless --no-editor)
+    if (!process.env.RAD_CODER_NO_EDITOR) {
+      openEditor();
+    }
+
+    // Start interactive TUI (only if stdin is a TTY)
+    if (process.stdin.isTTY) {
+      await new Promise(resolve => setTimeout(resolve, 300));
+      startInteractiveMenu();
+    } else {
+      console.log(' Press Ctrl+C to stop\n');
+    }
+  });
+}
+
+// ============================================================
+// Interactive Menu
+// ============================================================
+
+function getMainMenuItems() {
+  const items = [
+    { label: 'Open Browser', id: 'open-browser' },
+    { label: 'Open Editor', id: 'open-editor' },
+  ];
+
+  if (creativeConfig && creativeConfig.allFlowlines.length > 1) {
+    items.push({ label: 'Switch Flowline', id: 'switch-flowline', description: `(${creativeConfig.flowlineName})` });
+  }
+
+  items.push(
+    { label: 'Server Status', id: 'status' },
+    { label: 'Clear Logs', id: 'clear' },
+    { label: 'Restart Server', id: 'restart' },
+    { label: 'Stop Server', id: 'stop' },
+  );
+
+  return items;
+}
+
+function getFlowlineMenuItems() {
+  const items = [{ label: '← Back', id: 'back' }];
+  creativeConfig.allFlowlines.forEach((fl, i) => {
+    const marker = fl.id === creativeConfig.flowlineId ? ' ✓' : '';
+    items.push({ label: `${fl.name}${marker}`, id: `flowline-${i}`, flowlineIndex: i });
+  });
+  return items;
+}
+
+function startInteractiveMenu() {
+  tui = new TUI();
+
+  let inSubMenu = false;
+
+  function handleSelect(item) {
+    // Sub-menu: flowline selection
+    if (inSubMenu) {
+      if (item.id === 'back') {
+        inSubMenu = false;
+        tui.updateMenu(getMainMenuItems());
+        return;
+      }
+      // Switch flowline
+      const fl = creativeConfig.allFlowlines[item.flowlineIndex];
+      if (fl) {
+        creativeConfig.flowlineId = fl.id;
+        creativeConfig.flowlineName = fl.name;
+        creativeConfig.sizes = fl.sizes || [];
+        creativeConfig.isFluid = fl.isFluid || false;
+        log(` Switched to flowline: ${fl.name}`);
+        broadcastReload();
+      }
+      inSubMenu = false;
+      tui.updateMenu(getMainMenuItems());
+      return;
+    }
+
+    // Main menu actions
+    switch (item.id) {
+      case 'open-browser': {
+        const { port, host } = creativeConfig.server;
+        import('open').then(mod => {
+          mod.default(`http://${host}:${port}/test.html`);
+          log(' Browser opened');
+        }).catch(err => {
+          log(` Could not open browser: ${err.message}`);
+        });
+        break;
+      }
+
+      case 'open-editor':
+        openEditor();
+        break;
+
+      case 'switch-flowline':
+        inSubMenu = true;
+        tui.updateMenu(getFlowlineMenuItems());
+        break;
+
+      case 'status': {
+        const { port, host } = creativeConfig.server;
+        log('');
+        log(' ── Server Status ──────────────────');
+        log(` Creative ID : ${creativeConfig.creativeId}`);
+        log(` Flowline    : ${creativeConfig.flowlineName}`);
+        log(` Flowline ID : ${creativeConfig.flowlineId}`);
+        log(` Sizes       : ${creativeConfig.sizes.join(', ') || 'N/A'}`);
+        log(` Is Fluid    : ${creativeConfig.isFluid}`);
+        log(` Server      : http://${host}:${port}`);
+        log(` Directory   : ${userDir}`);
+        log(` Browsers    : ${clients.size} connected`);
+        log(' ───────────────────────────────────');
+        log('');
+        break;
+      }
+
+      case 'clear':
+        tui.clearLogs();
+        break;
+
+      case 'restart': {
+        log(' Restarting server...');
+        const { port, host } = creativeConfig.server;
+        server.close(() => {
+          server.listen(port, host, () => {
+            log(` Server restarted on http://${host}:${port}`);
+            broadcastReload();
+          });
+        });
+        break;
+      }
+
+      case 'stop':
+        gracefulShutdown();
+        break;
+    }
+  }
+
+  tui.init({
+    menuItems: getMainMenuItems(),
+    onSelect: handleSelect,
   });
 }
 
@@ -423,7 +607,10 @@ if (!isModule) {
 }
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+function gracefulShutdown() {
+  if (tui) {
+    tui.destroy();
+  }
   console.log('\n Shutting down...');
   watcher.close();
   wss.close();
@@ -431,4 +618,6 @@ process.on('SIGINT', () => {
     console.log(' Server stopped\n');
     process.exit(0);
   });
-});
+}
+
+process.on('SIGINT', gracefulShutdown);
