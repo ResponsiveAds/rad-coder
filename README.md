@@ -99,7 +99,7 @@ Instructions for developers who want to modify rad-coder itself.
 
 ```bash
 # Clone the repository
-git clone https://github.com/nicatronTg/rad-coder.git
+git clone https://github.com/ResponsiveAds/rad-coder.git
 cd rad-coder
 
 # Install dependencies
