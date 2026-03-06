@@ -87,23 +87,8 @@
     }
     
     .ad-container {
-      padding: 20px;
-      display: flex;
-      justify-content: center;
-      align-items: flex-start;
     }
     
-    .ad-wrapper {
-      background: #fff;
-      border-radius: 8px;
-      overflow: hidden;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-    }
-    
-    .inner-content {
-      width: 100%;
-      min-height: 300px;
-    }
     
     /* Toast notification for reload */
     .toast {
@@ -180,6 +165,8 @@
         document.getElementById('creative-id').textContent = 'Loading...';
         
         const config = await fetchConfigWithRetry();
+        //not sure why we get URL that does not work https://edit.responsiveads.com/flowlines
+        config.flSource = 'https://s3-eu-west-1.amazonaws.com/publish.responsiveads.com/flowlines/';
         
         // Update UI
         document.getElementById('creative-id').textContent = `ID: ${config.creativeId}`;
@@ -231,7 +218,7 @@
         tracking: false,
         isFluid: config.isFluid,
         screenshot: false,
-        crossOrigin: true,
+        crossOrigin: false,
         flSource: config.flSource,
         config: { 
           _default: { 
