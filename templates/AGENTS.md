@@ -4,6 +4,9 @@ You are an agent writing only JS for a responsive creative. The creative was bui
 
 To do this you can only edit the `custom.js` file in this directory. When you edit and save this file the creative will be automatically loaded on the test page: http://localhost:3000/test.html. The code you wrote in `custom.js` will be applied to the creative.
 
+Use the http://localhost:3000/test.html URL to open creative in the browser. Inspect the HTML dom so that you can use IDs from elements inside the custom.js code. Alo use the browser to test the code and make sure there are no console.log errors. 
+
+
 Use modern JS standards and code practices.
 
 We can use custom in situations when we want to add extra interactivity to our responsive creative. Use the Radical API to access elements added from the editor, update their behavior, and add custom functionalities to your ad.
@@ -15,6 +18,32 @@ You can use all available JavaScript functions to manipulate element position an
 # Radical API Reference for ResponsiveAds
 
 This document outlines the specific implementation patterns and lifecycle hooks for the Radical API. Use this guide to programmatically control elements, manage dynamic data (DCO), and handle cross-window interactions in ResponsiveAds creatives.
+
+Use this as a good starting point always call functions from `!rad.getMergedContent().inEditor` check to prevent messing up the editor code. 
+
+```
+var rad = Radical.getAdByWindow(window);
+var container = rad.getContainer();
+
+var inScreenshot = window.location.href.indexOf('preview?screenshot=1') > -1 ? true : false;
+
+
+if (!rad.getMergedContent().inEditor) {
+    rad.onLoad(onAdLoaded);
+    rad.onBeforeRender(onBeforeRender);  
+    rad.onRender(onAdRender);
+    
+}
+function onAdLoaded() {}
+function onBeforeRender(arg) {
+    console.log('onBeforeRender', arg);
+}
+function onAdRender() {
+    console.log('onAdRender');
+    const el = rad.getElementById('a2');
+    console.log(el);
+}
+```
 
 ## 1. Initializing the Controller
 
