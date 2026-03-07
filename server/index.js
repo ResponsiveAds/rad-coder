@@ -317,6 +317,14 @@ async function fetchCreativeConfig(creativeId) {
 const app = express();
 const server = http.createServer({ maxHeaderSize: 65536 }, app);
 
+// Track active HTTP sockets so shutdown can force-close stragglers.
+const activeSockets = new Set();
+server.on('connection', (socket) => {
+  activeSockets.add(socket);
+  socket.on('close', () => activeSockets.delete(socket));
+});
+let isShuttingDown = false;
+
 // WebSocket server for hot-reload
 const wss = new WebSocketServer({ server });
 
@@ -608,13 +616,53 @@ if (!isModule) {
 
 // Graceful shutdown
 function gracefulShutdown() {
+  if (isShuttingDown) {
+    console.log('\n Force exiting...\n');
+    process.exit(130);
+  }
+  isShuttingDown = true;
+
   if (tui) {
     tui.destroy();
   }
   console.log('\n Shutting down...');
-  watcher.close();
-  wss.close();
-  server.close(() => {
+  console.log(' Press Ctrl+C again to force exit');
+
+  // Ensure websocket clients do not keep the process alive.
+  clients.forEach((client) => {
+    try {
+      client.terminate();
+    } catch (_) {
+      // Ignore client termination failures during shutdown.
+    }
+  });
+
+  if (typeof server.closeIdleConnections === 'function') {
+    server.closeIdleConnections();
+  }
+
+  if (typeof server.closeAllConnections === 'function') {
+    server.closeAllConnections();
+  }
+
+  const forceTimer = setTimeout(() => {
+    activeSockets.forEach((socket) => {
+      try {
+        socket.destroy();
+      } catch (_) {
+        // Ignore socket destroy failures during forced shutdown.
+      }
+    });
+    console.log(' Forced shutdown: closed remaining connections');
+    process.exit(0);
+  }, 2000);
+
+  Promise.allSettled([
+    Promise.resolve().then(() => watcher.close()),
+    new Promise((resolve) => wss.close(resolve)),
+    new Promise((resolve) => server.close(resolve)),
+  ]).finally(() => {
+    clearTimeout(forceTimer);
     console.log(' Server stopped\n');
     process.exit(0);
   });
