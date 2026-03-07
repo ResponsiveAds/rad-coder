@@ -1,6 +1,6 @@
 {
   "name": "rad-coder",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Development environment for testing ResponsiveAds creative custom JS with hot-reload",
   "bin": {
     "rad-coder": "bin/cli.js"
