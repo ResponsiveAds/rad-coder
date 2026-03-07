@@ -118,12 +118,18 @@ const args = process.argv.slice(2);
 let input = null;
 let editorFlag = null;
 let noEditor = false;
+let resetFlag = false;
+let freshFlag = false;
 
 for (const arg of args) {
   if (arg.startsWith('--editor=')) {
     editorFlag = arg.split('=')[1];
   } else if (arg === '--no-editor') {
     noEditor = true;
+  } else if (arg === '--reset') {
+    resetFlag = true;
+  } else if (arg === '--fresh') {
+    freshFlag = true;
   } else if (!arg.startsWith('--')) {
     input = arg;
   }
@@ -137,7 +143,33 @@ if (noEditor) {
   process.env.RAD_CODER_NO_EDITOR = '1';
 }
 
-const creativeId = extractCreativeId(input);
+let creativeId = extractCreativeId(input);
+
+// Auto-detect creative ID when no argument is given
+if (!creativeId) {
+  const cwd = process.cwd();
+
+  // 1. Check for .rad-coder.json in current directory
+  const configPath = path.join(cwd, '.rad-coder.json');
+  if (fs.existsSync(configPath)) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      if (saved.creativeId) {
+        creativeId = saved.creativeId;
+        console.log(`Detected creative from .rad-coder.json: ${creativeId}`);
+      }
+    } catch (_) { /* ignore malformed config */ }
+  }
+
+  // 2. Check if current directory name looks like a creative ID (24-char hex)
+  if (!creativeId) {
+    const dirName = path.basename(cwd);
+    if (/^[a-f0-9]{24}$/i.test(dirName)) {
+      creativeId = dirName;
+      console.log(`Detected creative from folder name: ${creativeId}`);
+    }
+  }
+}
 
 if (!creativeId) {
   console.log('Usage: npx rad-coder <creativeId or previewUrl> [options]');
@@ -145,11 +177,16 @@ if (!creativeId) {
   console.log('Options:');
   console.log('  --editor=<cmd>   Set code editor command (default: code)');
   console.log('  --no-editor      Don\'t auto-open code editor');
+  console.log('  --reset          Overwrite local custom.js with remote version');
+  console.log('  --fresh          Delete local folder and start from scratch');
   console.log('');
   console.log('Examples:');
   console.log('  npx rad-coder 697b80fcc6e904025f5147a0');
   console.log('  npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a0/preview');
   console.log('  npx rad-coder 697b80fcc6e904025f5147a0 --editor=cursor');
+  console.log('');
+  console.log('Continue working (from inside a project folder):');
+  console.log('  cd 697b80fcc6e904025f5147a0 && npx rad-coder');
   process.exit(1);
 }
 
@@ -158,20 +195,34 @@ async function main() {
   const cwd = process.cwd();
   const currentDirName = path.basename(cwd);
   let userDir;
+  let isNewProject = false;
 
-  if (currentDirName === creativeId) {
+  // Check if a .rad-coder.json exists in cwd (we're inside a project folder)
+  const cwdConfigPath = path.join(cwd, '.rad-coder.json');
+  const inProjectDir = fs.existsSync(cwdConfigPath) || currentDirName === creativeId;
+
+  if (inProjectDir) {
     // Already in the correct folder
     userDir = cwd;
-    console.log(`Using existing folder: ./${creativeId}`);
+    console.log(`Using existing project: ${userDir}`);
   } else {
     // Create or use a folder with the creative ID
     userDir = path.join(cwd, creativeId);
     if (!fs.existsSync(userDir)) {
       fs.mkdirSync(userDir);
+      isNewProject = true;
       console.log(`Created folder: ./${creativeId}`);
     } else {
       console.log(`Using existing folder: ./${creativeId}`);
     }
+  }
+
+  // Handle --fresh: delete folder and recreate
+  if (freshFlag && fs.existsSync(userDir)) {
+    fs.rmSync(userDir, { recursive: true, force: true });
+    fs.mkdirSync(userDir);
+    isNewProject = true;
+    console.log(`  Fresh start: deleted and recreated ./${creativeId}`);
   }
 
   // Set environment variables for the server
@@ -189,55 +240,39 @@ async function main() {
   const hasCreativeCustomJs = config.customjs && config.customjs.trim().length > 0;
 
   // Handle custom.js file creation/update
-  if (hasCreativeCustomJs) {
-    if (!customJsExists) {
-      // custom.js doesn't exist - ask user what to use
-      const choice = await promptUser(
-        'Found customJS in this creative. What would you like to use?',
-        [
-          'Use customJS from the creative (recommended)',
-          'Start with blank template'
-        ]
-      );
+  if (resetFlag && hasCreativeCustomJs) {
+    // --reset: overwrite local custom.js with remote version
+    fs.writeFileSync(customJsPath, config.customjs, 'utf-8');
+    console.log('  Reset custom.js (from creative)');
+  } else if (customJsExists) {
+    // custom.js already exists — use it silently (zero-friction repeat run)
+    console.log('  Using existing custom.js');
+  } else if (hasCreativeCustomJs) {
+    // First run with remote customjs available — prompt
+    const choice = await promptUser(
+      'Found customJS in this creative. What would you like to use?',
+      [
+        'Use customJS from the creative (recommended)',
+        'Start with blank template'
+      ]
+    );
 
-      if (choice === 0) {
-        // Use customjs from creative
-        fs.writeFileSync(customJsPath, config.customjs, 'utf-8');
-        console.log('  Created custom.js (from creative)');
-      } else {
-        // Use template
-        const templatePath = path.join(packageRoot, 'templates', 'custom.js');
-        if (fs.existsSync(templatePath)) {
-          fs.copyFileSync(templatePath, customJsPath);
-          console.log('  Created custom.js (from template)');
-        }
-      }
+    if (choice === 0) {
+      fs.writeFileSync(customJsPath, config.customjs, 'utf-8');
+      console.log('  Created custom.js (from creative)');
     } else {
-      // custom.js exists - ask user if they want to overwrite
-      const choice = await promptUser(
-        'Found customJS in this creative. Your custom.js already exists.',
-        [
-          'Keep existing custom.js',
-          'Overwrite with customJS from creative'
-        ]
-      );
-
-      if (choice === 1) {
-        // Overwrite with creative's customjs
-        fs.writeFileSync(customJsPath, config.customjs, 'utf-8');
-        console.log('  Overwrote custom.js with creative\'s customJS');
-      } else {
-        console.log('  Keeping existing custom.js');
-      }
-    }
-  } else {
-    // No customjs in creative - use template if custom.js doesn't exist
-    if (!customJsExists) {
       const templatePath = path.join(packageRoot, 'templates', 'custom.js');
       if (fs.existsSync(templatePath)) {
         fs.copyFileSync(templatePath, customJsPath);
         console.log('  Created custom.js (from template)');
       }
+    }
+  } else {
+    // No customjs in creative — use template if custom.js doesn't exist
+    const templatePath = path.join(packageRoot, 'templates', 'custom.js');
+    if (fs.existsSync(templatePath)) {
+      fs.copyFileSync(templatePath, customJsPath);
+      console.log('  Created custom.js (from template)');
     }
   }
 
@@ -249,6 +284,22 @@ async function main() {
       fs.copyFileSync(templatePath, agentsMdPath);
       console.log('  Created AGENTS.md');
     }
+  }
+
+  // Save .rad-coder.json config for future no-arg runs
+  const radCoderConfigPath = path.join(userDir, '.rad-coder.json');
+  const savedConfig = {
+    creativeId: config.creativeId,
+    flowlineId: config.flowlineId,
+    flowlineName: config.flowlineName,
+    createdAt: fs.existsSync(radCoderConfigPath)
+      ? JSON.parse(fs.readFileSync(radCoderConfigPath, 'utf-8')).createdAt
+      : new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  fs.writeFileSync(radCoderConfigPath, JSON.stringify(savedConfig, null, 2) + '\n', 'utf-8');
+  if (isNewProject) {
+    console.log('  Created .rad-coder.json');
   }
 
   // Start the server with pre-fetched config

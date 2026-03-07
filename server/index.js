@@ -315,7 +315,7 @@ async function fetchCreativeConfig(creativeId) {
 // ============================================================
 
 const app = express();
-const server = http.createServer(app);
+const server = http.createServer({ maxHeaderSize: 65536 }, app);
 
 // WebSocket server for hot-reload
 const wss = new WebSocketServer({ server });

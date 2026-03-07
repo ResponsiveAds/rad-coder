@@ -39,12 +39,28 @@ npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a
 ### Basic Usage
 
 ```bash
-# Create a new directory for your project
-mkdir my-creative
-cd my-creative
-
-# Start rad-coder with your creative ID
+# Start rad-coder with your creative ID (creates a ./<id> folder)
 npx rad-coder 697b80fcc6e904025f5147a0
+```
+
+### Continue Working
+
+Next time, just `cd` into the project folder and run without arguments:
+
+```bash
+cd 697b80fcc6e904025f5147a0
+npx rad-coder
+```
+
+The CLI auto-detects the creative from `.rad-coder.json` (or the folder name). Your local `custom.js` is used as-is — no prompts.
+
+### Options
+
+```bash
+npx rad-coder <id> --reset       # Overwrite local custom.js with the remote version
+npx rad-coder <id> --fresh       # Delete folder and start from scratch
+npx rad-coder <id> --editor=cursor  # Use a specific editor
+npx rad-coder <id> --no-editor   # Don't auto-open editor
 ```
 
 ### With AI Assistants
@@ -58,10 +74,11 @@ The generated `AGENTS.md` file contains instructions for AI coding assistants. W
 
 ### Workflow
 
-1. Run `npx rad-coder <creativeId>`
+1. Run `npx rad-coder <creativeId>` (first time — creates project folder)
 2. Edit `custom.js` in your favorite editor
 3. Save the file - browser auto-reloads
 4. See your changes applied to the creative instantly
+5. Next session: `cd <creativeId> && npx rad-coder` to continue
 
 ## Features
 
