@@ -1,40 +1,22 @@
-/**
- * [CustomJS] Ad Creative
- * Animates the QR code image in from the right side after the creative loads.
- */
+//# sourceURL=RAD.js
+var rad = Radical.getAdByWindow(window);
+var container = rad.getContainer();
 
-(function () {
-  'use strict';
+var inScreenshot = window.location.href.indexOf('preview?screenshot=1') > -1 ? true : false;
 
-  var rad = Radical.getAdByWindow(window);
-  var animated = false;
 
-  rad.onRender(function () {
-    var qrElement = rad.getElementById('f5');
-    if (!qrElement || !qrElement.domNode) return;
-
-    var node = qrElement.domNode;
-
-    if (!animated) {
-      animated = true;
-
-      // Read the original transform set by Radical (e.g. "translateX(-50%)")
-      var originalTransform = getComputedStyle(node).transform || node.style.transform;
-
-      // Start off-screen to the right
-      node.style.transition = 'none';
-      node.style.transform = 'translateX(100%)';
-      node.style.opacity = '0';
-
-      // Force reflow so the start position takes effect
-      void node.offsetWidth;
-
-      // Animate to original position
-      node.style.transition = 'transform 0.8s cubic-bezier(0.25, 0.46, 0.45, 0.94), opacity 0.8s ease';
-      setTimeout(function () {
-        node.style.transform = originalTransform;
-        node.style.opacity = '1';
-      }, 300);
-    }
-  });
-})();
+if (!rad.getMergedContent().inEditor) {
+    rad.onLoad(onAdLoaded);
+    rad.onBeforeRender(onBeforeRender);  
+    rad.onRender(onAdRender);
+    
+}
+function onAdLoaded() {}
+function onBeforeRender(arg) {
+    console.log('onBeforeRender', arg);
+}
+function onAdRender() {
+    console.log('onAdRender');
+    const el = rad.getElementById('a2');
+    console.log(el);
+}
