@@ -286,6 +286,16 @@ async function main() {
     }
   }
 
+  // Copy test.html if it doesn't exist so each project can customize it locally
+  const testHtmlPath = path.join(userDir, 'test.html');
+  if (!fs.existsSync(testHtmlPath)) {
+    const sourceTestHtmlPath = path.join(packageRoot, 'public', 'test.html');
+    if (fs.existsSync(sourceTestHtmlPath)) {
+      fs.copyFileSync(sourceTestHtmlPath, testHtmlPath);
+      console.log('  Created test.html');
+    }
+  }
+
   // Save .rad-coder.json config for future no-arg runs
   const radCoderConfigPath = path.join(userDir, '.rad-coder.json');
   const savedConfig = {

@@ -354,6 +354,18 @@ function broadcastReload() {
 // Enable CORS for all origins (needed for cross-origin script loading)
 app.use(cors());
 
+// Serve project-local test.html when available so users can customize it per creative
+app.get('/test.html', (req, res) => {
+  const localTestHtmlPath = path.join(userDir, 'test.html');
+  if (fs.existsSync(localTestHtmlPath)) {
+    res.sendFile(localTestHtmlPath);
+    return;
+  }
+
+  const packageTestHtmlPath = path.join(packageDir, 'public', 'test.html');
+  res.sendFile(packageTestHtmlPath);
+});
+
 // Serve static files from public directory (in package)
 app.use(express.static(path.join(packageDir, 'public')));
 
