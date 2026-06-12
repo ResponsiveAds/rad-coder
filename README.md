@@ -28,7 +28,7 @@ npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a
 
 2. **Fetches creative config** from ResponsiveAds Studio automatically
 
-3. **Starts a dev server** at `http://localhost:3000`
+3. **Starts a dev server** at `http://localhost:3000` (or next available port)
 
 4. **Opens your browser** with the test page showing your creative
 
@@ -61,6 +61,8 @@ npx rad-coder <id> --reset       # Overwrite local custom.js with the remote ver
 npx rad-coder <id> --fresh       # Delete folder and start from scratch
 npx rad-coder <id> --editor=cursor  # Use a specific editor
 npx rad-coder <id> --no-editor   # Don't auto-open editor
+npx rad-coder <id> --port=3100   # Preferred starting port (falls back if busy)
+npx rad-coder <id> --no-ui       # Non-interactive mode for automation/agent harnesses
 ```
 
 ### With AI Assistants

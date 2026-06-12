@@ -120,11 +120,23 @@ let editorFlag = null;
 let noEditor = false;
 let resetFlag = false;
 let freshFlag = false;
+let noUiFlag = false;
+let portFlag = null;
 
 for (const arg of args) {
   if (arg.startsWith('--editor=')) {
     editorFlag = arg.split('=')[1];
+  } else if (arg.startsWith('--port=')) {
+    const parsed = Number.parseInt(arg.split('=')[1], 10);
+    if (Number.isNaN(parsed) || parsed < 1 || parsed > 65535) {
+      console.error(`Invalid --port value: ${arg.split('=')[1]}. Expected 1-65535.`);
+      process.exit(1);
+    }
+    portFlag = parsed;
   } else if (arg === '--no-editor') {
+    noEditor = true;
+  } else if (arg === '--no-ui') {
+    noUiFlag = true;
     noEditor = true;
   } else if (arg === '--reset') {
     resetFlag = true;
@@ -141,6 +153,13 @@ if (editorFlag) {
 }
 if (noEditor) {
   process.env.RAD_CODER_NO_EDITOR = '1';
+}
+if (portFlag !== null) {
+  process.env.RAD_CODER_PORT = String(portFlag);
+}
+if (noUiFlag) {
+  process.env.RAD_CODER_NO_UI = '1';
+  process.env.RAD_CODER_NO_BROWSER = '1';
 }
 
 let creativeId = extractCreativeId(input);
@@ -176,7 +195,9 @@ if (!creativeId) {
   console.log('');
   console.log('Options:');
   console.log('  --editor=<cmd>   Set code editor command (default: code)');
+  console.log('  --port=<number>  Preferred starting port (default: 3000)');
   console.log('  --no-editor      Don\'t auto-open code editor');
+  console.log('  --no-ui          Non-interactive mode (no prompts/menu/browser/editor)');
   console.log('  --reset          Overwrite local custom.js with remote version');
   console.log('  --fresh          Delete local folder and start from scratch');
   console.log('');
@@ -184,6 +205,7 @@ if (!creativeId) {
   console.log('  npx rad-coder 697b80fcc6e904025f5147a0');
   console.log('  npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a0/preview');
   console.log('  npx rad-coder 697b80fcc6e904025f5147a0 --editor=cursor');
+  console.log('  npx rad-coder 697b80fcc6e904025f5147a0 --port=3100 --no-ui');
   console.log('');
   console.log('Continue working (from inside a project folder):');
   console.log('  cd 697b80fcc6e904025f5147a0 && npx rad-coder');
@@ -249,13 +271,18 @@ async function main() {
     console.log('  Using existing custom.js');
   } else if (hasCreativeCustomJs) {
     // First run with remote customjs available — prompt
-    const choice = await promptUser(
-      'Found customJS in this creative. What would you like to use?',
-      [
-        'Use customJS from the creative (recommended)',
-        'Start with blank template'
-      ]
-    );
+    let choice = 0;
+    if (!noUiFlag) {
+      choice = await promptUser(
+        'Found customJS in this creative. What would you like to use?',
+        [
+          'Use customJS from the creative (recommended)',
+          'Start with blank template'
+        ]
+      );
+    } else {
+      console.log('  No-UI mode: using customJS from creative');
+    }
 
     if (choice === 0) {
       fs.writeFileSync(customJsPath, config.customjs, 'utf-8');

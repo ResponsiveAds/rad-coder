@@ -58,6 +58,8 @@ function openEditor() {
 // When run directly for development, use defaults
 const userDir = process.env.RAD_CODER_USER_DIR || process.cwd();
 const packageDir = process.env.RAD_CODER_PACKAGE_DIR || path.join(__dirname, '..');
+const noUiMode = process.env.RAD_CODER_NO_UI === '1';
+const noBrowserMode = process.env.RAD_CODER_NO_BROWSER === '1';
 
 // ============================================================
 // CLI Argument Parsing
@@ -280,6 +282,11 @@ async function fetchCreativeConfig(creativeId) {
     }
   
     
+    const envPort = Number.parseInt(process.env.RAD_CODER_PORT || '', 10);
+    const preferredPort = Number.isInteger(envPort) && envPort >= 1 && envPort <= 65535
+      ? envPort
+      : 3000;
+
     return {
       creativeId: extractedCreativeId,
       flowlineId: fl._id || fl.id,
@@ -290,7 +297,7 @@ async function fetchCreativeConfig(creativeId) {
       flSource: '//edit.responsiveads.com/flowlines/',
       radicalScript: 'https://studio.responsiveads.com/js/libs/radical.min.js',
       server: {
-        port: 3000,
+        port: preferredPort,
         host: 'localhost'
       },
       // Store all flowlines for reference
@@ -419,6 +426,49 @@ watcher.on('error', (error) => {
 // Start Server
 // ============================================================
 
+function listenOnPort(host, port) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      cleanup();
+      reject(err);
+    };
+
+    const onListening = () => {
+      const address = server.address();
+      cleanup();
+      resolve(address && typeof address === 'object' ? address.port : port);
+    };
+
+    const cleanup = () => {
+      server.off('error', onError);
+    };
+
+    server.once('error', onError);
+    server.listen(port, host, onListening);
+  });
+}
+
+async function listenOnAvailablePort(host, preferredPort, maxAttempts = 20) {
+  for (let i = 0; i < maxAttempts; i++) {
+    const candidatePort = preferredPort + i;
+
+    try {
+      const boundPort = await listenOnPort(host, candidatePort);
+      if (i > 0) {
+        console.log(`\n Port ${preferredPort} is in use. Using port ${boundPort} instead.`);
+      }
+      return boundPort;
+    } catch (err) {
+      if (err && err.code === 'EADDRINUSE') {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error(`Could not find an available port in range ${preferredPort}-${preferredPort + maxAttempts - 1}`);
+}
+
 async function start(prefetchedConfig = null) {
   console.log('\n========================================');
   console.log(' RAD Coder - ResponsiveAds Creative Tester');
@@ -448,39 +498,46 @@ async function start(prefetchedConfig = null) {
   }
   
   const { port, host } = creativeConfig.server;
-  
-  server.listen(port, host, async () => {
-    console.log(`\n Server running at: http://${host}:${port}`);
-    console.log(` Test page: http://${host}:${port}/test.html`);
-    console.log(`\n Working directory: ${userDir}`);
-    console.log(' Edit custom.js and save to hot-reload\n');
-    
-    // Small delay to ensure server is fully ready before opening browser
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // Auto-open browser
+  const activePort = await listenOnAvailablePort(host, port);
+  creativeConfig.server.port = activePort;
+
+  console.log(`\n Server running at: http://${host}:${activePort}`);
+  console.log(` Test page: http://${host}:${activePort}/test.html`);
+  console.log(`\n Working directory: ${userDir}`);
+  console.log(' Edit custom.js and save to hot-reload\n');
+
+  // Small delay to ensure server is fully ready before opening browser
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // Auto-open browser unless disabled
+  if (!noBrowserMode) {
     try {
       const open = (await import('open')).default;
-      await open(`http://${host}:${port}/test.html`);
+      await open(`http://${host}:${activePort}/test.html`);
       console.log(' Browser opened automatically');
     } catch (err) {
       console.log(` Could not auto-open browser: ${err.message}`);
-      console.log(` Please open http://${host}:${port}/test.html manually`);
+      console.log(` Please open http://${host}:${activePort}/test.html manually`);
     }
+  } else {
+    console.log(' Browser auto-open disabled (--no-ui)');
+  }
 
-    // Auto-open editor (unless --no-editor)
-    if (!process.env.RAD_CODER_NO_EDITOR) {
-      openEditor();
-    }
+  // Auto-open editor (unless --no-editor)
+  if (!process.env.RAD_CODER_NO_EDITOR) {
+    openEditor();
+  }
 
-    // Start interactive TUI (only if stdin is a TTY)
-    if (process.stdin.isTTY) {
-      await new Promise(resolve => setTimeout(resolve, 300));
-      startInteractiveMenu();
-    } else {
-      console.log(' Press Ctrl+C to stop\n');
-    }
-  });
+  // Start interactive TUI unless disabled
+  if (!noUiMode && process.stdin.isTTY) {
+    await new Promise(resolve => setTimeout(resolve, 300));
+    startInteractiveMenu();
+  } else if (noUiMode) {
+    console.log(' Running in no-UI mode');
+    console.log(' Press Ctrl+C to stop\n');
+  } else {
+    console.log(' Press Ctrl+C to stop\n');
+  }
 }
 
 // ============================================================
@@ -591,10 +648,15 @@ function startInteractiveMenu() {
         log(' Restarting server...');
         const { port, host } = creativeConfig.server;
         server.close(() => {
-          server.listen(port, host, () => {
-            log(` Server restarted on http://${host}:${port}`);
-            broadcastReload();
-          });
+          listenOnAvailablePort(host, port)
+            .then((activePort) => {
+              creativeConfig.server.port = activePort;
+              log(` Server restarted on http://${host}:${activePort}`);
+              broadcastReload();
+            })
+            .catch((err) => {
+              log(` ✗ Could not restart server: ${err.message}`);
+            });
         });
         break;
       }
