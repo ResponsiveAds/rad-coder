@@ -361,8 +361,7 @@ function broadcastReload() {
 // Enable CORS for all origins (needed for cross-origin script loading)
 app.use(cors());
 
-// Serve project-local test.html when available so users can customize it per creative
-app.get('/test.html', (req, res) => {
+function sendTestHtml(res) {
   const localTestHtmlPath = path.join(userDir, 'test.html');
   if (fs.existsSync(localTestHtmlPath)) {
     res.sendFile(localTestHtmlPath);
@@ -371,6 +370,15 @@ app.get('/test.html', (req, res) => {
 
   const packageTestHtmlPath = path.join(packageDir, 'public', 'test.html');
   res.sendFile(packageTestHtmlPath);
+}
+
+// Serve project-local test.html when available so users can customize it per creative
+app.get('/', (req, res) => {
+  sendTestHtml(res);
+});
+
+app.get('/test.html', (req, res) => {
+  sendTestHtml(res);
 });
 
 // Serve static files from public directory (in package)
@@ -502,7 +510,7 @@ async function start(prefetchedConfig = null) {
   creativeConfig.server.port = activePort;
 
   console.log(`\n Server running at: http://${host}:${activePort}`);
-  console.log(` Test page: http://${host}:${activePort}/test.html`);
+  console.log(` Test page: http://${host}:${activePort}/`);
   console.log(`\n Working directory: ${userDir}`);
   console.log(' Edit custom.js and save to hot-reload\n');
 
@@ -513,11 +521,11 @@ async function start(prefetchedConfig = null) {
   if (!noBrowserMode) {
     try {
       const open = (await import('open')).default;
-      await open(`http://${host}:${activePort}/test.html`);
+      await open(`http://${host}:${activePort}/`);
       console.log(' Browser opened automatically');
     } catch (err) {
       console.log(` Could not auto-open browser: ${err.message}`);
-      console.log(` Please open http://${host}:${activePort}/test.html manually`);
+      console.log(` Please open http://${host}:${activePort}/ manually`);
     }
   } else {
     console.log(' Browser auto-open disabled (--no-ui)');
@@ -606,7 +614,7 @@ function startInteractiveMenu() {
       case 'open-browser': {
         const { port, host } = creativeConfig.server;
         import('open').then(mod => {
-          mod.default(`http://${host}:${port}/test.html`);
+          mod.default(`http://${host}:${port}/`);
           log(' Browser opened');
         }).catch(err => {
           log(` Could not open browser: ${err.message}`);
