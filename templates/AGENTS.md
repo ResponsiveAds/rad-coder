@@ -15,6 +15,55 @@ You can use all available JavaScript functions to manipulate element position an
 
 ---
 
+# Studio sync — read this before touching custom.js
+
+The `custom.js` in this folder is a **local copy**. The live version lives in Studio
+(Creative → Settings → Custom JS) and anyone on the team can change it there at any time.
+There is no automatic push: Studio is only updated when a human pastes `custom.js` into it.
+
+That means a stale local copy can silently destroy someone else's work. rad-coder compares
+the two on every start and while the dev server runs, and tells you where you stand:
+
+| What rad-coder prints | What it means | What you should do |
+|---|---|---|
+| `✓ custom.js is in sync with Studio` | identical | work normally |
+| `local edits not in Studio yet` | your unpushed work | work normally; tell the user to paste when done |
+| `↓ Studio has a NEWER custom JS` | someone edited Studio, you had no local changes | rad-coder pulls it for you — re-read `custom.js` before editing |
+| `⚠⚠⚠ CONFLICT` / `⚠ STUDIO CHANGED` | **both sides changed** | **stop and resolve — see below** |
+
+You can also read the state as JSON at any time:
+
+```bash
+curl -s http://localhost:3000/api/sync-status
+```
+
+`state` is one of `in-sync`, `local-ahead`, `remote-ahead`, `diverged`, `unknown-divergence`.
+
+## On a conflict
+
+`custom.remote.js` appears next to `custom.js` — that is Studio's current version.
+
+1. **Do not paste `custom.js` into Studio.** You would overwrite whatever was added there.
+2. Diff the two files and find what Studio has that you don't (analytics calls, event
+   tracking and feed handlers are the usual casualties).
+3. Merge those parts into `custom.js` by hand, keeping both sides' work.
+4. Tell the user what you merged and that the merged `custom.js` is what should be pasted
+   into Studio.
+
+## Recovering an older Studio version
+
+`.rad-coder/` keeps history so nothing is lost:
+
+- `.rad-coder/history/<timestamp>.js` — every distinct version ever seen in Studio
+- `.rad-coder/backups/custom-<timestamp>.js` — your local file before rad-coder overwrote it
+- `.rad-coder/base.js` — the version the two sides last agreed on
+
+Never edit or delete anything in `.rad-coder/` — it is the only record of what Studio used
+to contain.
+
+
+---
+
 # Radical API Reference for ResponsiveAds
 
 This document outlines the specific implementation patterns and lifecycle hooks for the Radical API. Use this guide to programmatically control elements, manage dynamic data (DCO), and handle cross-window interactions in ResponsiveAds creatives.

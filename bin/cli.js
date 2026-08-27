@@ -2,6 +2,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const sync = require('../server/sync.js');
 
 // Get the package root directory
 const packageRoot = path.join(__dirname, '..');
@@ -121,6 +122,7 @@ let noEditor = false;
 let resetFlag = false;
 let freshFlag = false;
 let noUiFlag = false;
+let noSyncCheckFlag = false;
 let portFlag = null;
 
 for (const arg of args) {
@@ -142,6 +144,8 @@ for (const arg of args) {
     resetFlag = true;
   } else if (arg === '--fresh') {
     freshFlag = true;
+  } else if (arg === '--no-sync-check') {
+    noSyncCheckFlag = true;
   } else if (!arg.startsWith('--')) {
     input = arg;
   }
@@ -200,6 +204,7 @@ if (!creativeId) {
   console.log('  --no-ui          Non-interactive mode (no prompts/menu/browser/editor)');
   console.log('  --reset          Overwrite local custom.js with remote version');
   console.log('  --fresh          Delete local folder and start from scratch');
+  console.log('  --no-sync-check  Skip comparing local custom.js against Studio');
   console.log('');
   console.log('Examples:');
   console.log('  npx rad-coder 697b80fcc6e904025f5147a0');
@@ -210,6 +215,236 @@ if (!creativeId) {
   console.log('Continue working (from inside a project folder):');
   console.log('  cd 697b80fcc6e904025f5147a0 && npx rad-coder');
   process.exit(1);
+}
+
+/**
+ * Seed custom.js on a first run in this folder.
+ * @returns {Promise<string>} 'creative' or 'template'
+ */
+async function seedCustomJs(userDir, customJsPath, remote, hasRemote) {
+  if (hasRemote) {
+    let choice = 0;
+    if (!noUiFlag) {
+      choice = await promptUser(
+        'Found customJS in this creative. What would you like to use?',
+        [
+          'Use customJS from the creative (recommended)',
+          'Start with blank template'
+        ]
+      );
+    } else {
+      console.log('  No-UI mode: using customJS from creative');
+    }
+
+    if (choice === 0) {
+      fs.writeFileSync(customJsPath, remote, 'utf-8');
+      console.log('  Created custom.js (from creative)');
+      return 'creative';
+    }
+  }
+
+  const templatePath = path.join(packageRoot, 'templates', 'custom.js');
+  if (fs.existsSync(templatePath)) {
+    fs.copyFileSync(templatePath, customJsPath);
+    console.log('  Created custom.js (from template)');
+  }
+  return 'template';
+}
+
+function printDiff(userDir, local, remote) {
+  console.log('');
+  console.log(sync.renderDiff(userDir, local, remote, 'local-custom.js', 'studio-custom.js'));
+  console.log('');
+}
+
+/**
+ * Decide what the local custom.js should be, comparing it against the version
+ * currently in Studio. See server/sync.js for why the comparison is three-way.
+ *
+ * @returns {Promise<{state: string, baseSource: string}>}
+ */
+async function resolveCustomJs(userDir, config) {
+  const customJsPath = path.join(userDir, 'custom.js');
+  const remote = config.customjs;
+  const hasRemote = remote && remote.trim().length > 0;
+  const local = sync.readLocal(userDir);
+
+  // --reset: deliberately throw away local work and take Studio's version
+  if (resetFlag && hasRemote) {
+    const backup = sync.backupLocal(userDir);
+    fs.writeFileSync(customJsPath, remote, 'utf-8');
+    sync.writeBase(userDir, remote);
+    sync.removeRemoteCopy(userDir);
+    console.log('  Reset custom.js (from creative)');
+    if (backup) {
+      console.log(`  Previous local version saved to ${sync.relative(userDir, backup)}`);
+    }
+    return { state: 'in-sync', baseSource: 'studio' };
+  }
+  if (resetFlag && !hasRemote) {
+    console.log('  --reset ignored: this creative has no custom JS in Studio');
+  }
+
+  // First run in this folder — nothing to compare against yet
+  if (local === null) {
+    const source = await seedCustomJs(userDir, customJsPath, remote, hasRemote);
+    // The base records what Studio had at seed time, regardless of what we put
+    // locally — so a later Studio edit reads as remote-ahead, not a conflict.
+    sync.writeBase(userDir, remote || '');
+    sync.archiveRemote(userDir, remote);
+    return {
+      state: source === 'creative' ? 'in-sync' : 'local-ahead',
+      baseSource: 'studio'
+    };
+  }
+
+  if (noSyncCheckFlag) {
+    console.log('  Using existing custom.js (Studio sync check skipped)');
+    return { state: 'skipped', baseSource: 'unchanged' };
+  }
+
+  const base = sync.readBase(userDir);
+  const status = sync.classify({ local, remote, base });
+
+  switch (status.state) {
+    case 'in-sync':
+      sync.writeBase(userDir, remote || '');
+      sync.removeRemoteCopy(userDir);
+      console.log('  ✓ custom.js is in sync with Studio');
+      return { state: status.state, baseSource: 'studio' };
+
+    case 'local-ahead':
+      sync.removeRemoteCopy(userDir);
+      if (!hasRemote) {
+        console.log('  Using existing custom.js — Studio has no custom JS yet');
+      } else {
+        console.log(`  Using existing custom.js — local edits not in Studio yet (local vs Studio: ${sync.diffSummary(remote, local)})`);
+      }
+      console.log('    Studio is only updated when you paste custom.js into Creative → Settings → Custom JS');
+      return { state: status.state, baseSource: 'unchanged' };
+
+    case 'remote-ahead':
+      return await resolveRemoteAhead(userDir, customJsPath, local, remote);
+
+    case 'diverged':
+    case 'unknown-divergence':
+      return await resolveConflict(userDir, customJsPath, local, remote, status);
+
+    default:
+      return { state: status.state, baseSource: 'unchanged' };
+  }
+}
+
+/**
+ * Studio moved on and our local file has no unique work — pulling is lossless.
+ */
+async function resolveRemoteAhead(userDir, customJsPath, local, remote) {
+  const archived = sync.archiveRemote(userDir, remote);
+  const hasRemote = remote && remote.trim().length > 0;
+
+  console.log('');
+  console.log('  ↓ Studio has a NEWER custom JS than your local copy.');
+  console.log(`    Your local custom.js has no changes of its own (${hasRemote ? `Studio vs local: ${sync.diffSummary(local, remote)}` : 'Studio cleared its custom JS'})`);
+  if (archived) {
+    console.log(`    Studio version archived to ${sync.relative(userDir, archived)}`);
+  }
+
+  let choice = 0;
+  if (!noUiFlag) {
+    while (true) {
+      choice = await promptUser('Studio was updated. What would you like to use?', [
+        'Use the Studio version (recommended)',
+        'Keep my local custom.js',
+        'Show the differences'
+      ]);
+      if (choice !== 2) break;
+      printDiff(userDir, local, remote);
+    }
+  }
+
+  if (choice === 1) {
+    // Explicit decision to stay behind — record it so we stop nagging.
+    sync.writeBase(userDir, remote || '');
+    console.log('  Keeping local custom.js (Studio version left untouched)');
+    return { state: 'local-ahead', baseSource: 'local-decision' };
+  }
+
+  const backup = sync.backupLocal(userDir);
+  fs.writeFileSync(customJsPath, remote || '', 'utf-8');
+  sync.writeBase(userDir, remote || '');
+  sync.removeRemoteCopy(userDir);
+  console.log('  ↓ Pulled the newer custom.js from Studio');
+  if (backup) {
+    console.log(`    Previous local version saved to ${sync.relative(userDir, backup)}`);
+  }
+  return { state: 'in-sync', baseSource: 'studio' };
+}
+
+/**
+ * Both sides changed (or we have no base to tell). Never overwrite anything
+ * without an explicit decision — this is the case that loses people's work.
+ */
+async function resolveConflict(userDir, customJsPath, local, remote, status) {
+  const archived = sync.archiveRemote(userDir, remote);
+  const remoteCopy = sync.writeRemoteCopy(userDir, remote);
+  const unknown = status.state === 'unknown-divergence';
+
+  console.log('');
+  console.log('  ⚠⚠⚠  CONFLICT — your local custom.js and the Studio version differ');
+  if (unknown) {
+    console.log('        and there is no sync history for this folder, so it is');
+    console.log('        impossible to tell which side is newer.');
+  } else {
+    console.log('        and BOTH have changed since they last matched.');
+    console.log('        Someone edited this creative\'s custom JS in Studio.');
+  }
+  console.log('');
+  console.log(`        Studio version  → ${sync.relative(userDir, remoteCopy)}`);
+  if (archived) {
+    console.log(`        archived copy   → ${sync.relative(userDir, archived)}`);
+  }
+  console.log(`        Studio vs local → ${sync.diffSummary(local, remote)}`);
+  console.log('');
+
+  if (noUiFlag) {
+    console.log('        ► Using your LOCAL custom.js.');
+    console.log('        ► Do NOT paste it into Studio before diffing against custom.remote.js —');
+    console.log('          you would overwrite whatever was added there.');
+    console.log('');
+    // Base is deliberately left alone: the warning must repeat until a human resolves it.
+    return { state: status.state, baseSource: 'unchanged' };
+  }
+
+  while (true) {
+    const choice = await promptUser('How do you want to resolve this?', [
+      'Keep my local custom.js (Studio version stays in custom.remote.js)',
+      'Show the differences',
+      'Overwrite my local custom.js with the Studio version'
+    ]);
+
+    if (choice === 1) {
+      printDiff(userDir, local, remote);
+      continue;
+    }
+
+    if (choice === 2) {
+      const backup = sync.backupLocal(userDir);
+      fs.writeFileSync(customJsPath, remote || '', 'utf-8');
+      sync.writeBase(userDir, remote || '');
+      sync.removeRemoteCopy(userDir);
+      console.log('  Local custom.js replaced with the Studio version');
+      if (backup) {
+        console.log(`    Your previous version saved to ${sync.relative(userDir, backup)}`);
+      }
+      return { state: 'in-sync', baseSource: 'studio' };
+    }
+
+    // Keep local, but merge the two by hand later — remote copy stays on disk.
+    sync.writeBase(userDir, remote || '');
+    console.log('  Keeping your local custom.js');
+    console.log(`    Merge anything you still need from ${sync.relative(userDir, remoteCopy)} before pasting into Studio`);
+    return { state: 'local-ahead', baseSource: 'local-decision' };
+  }
 }
 
 async function main() {
@@ -239,12 +474,19 @@ async function main() {
     }
   }
 
-  // Handle --fresh: delete folder and recreate
+  // Handle --fresh: delete folder and recreate, but keep the archive of Studio
+  // versions — that is a record of what the creative contained, not local scratch,
+  // and it is the only way to recover a custom JS that was lost in Studio.
   if (freshFlag && fs.existsSync(userDir)) {
+    const preserved = sync.takeHistory(userDir);
     fs.rmSync(userDir, { recursive: true, force: true });
     fs.mkdirSync(userDir);
     isNewProject = true;
     console.log(`  Fresh start: deleted and recreated ./${creativeId}`);
+    const restored = sync.restoreHistory(userDir, preserved);
+    if (restored > 0) {
+      console.log(`  Kept ${restored} archived Studio version(s) in ${sync.SYNC_DIR}/history`);
+    }
   }
 
   // Set environment variables for the server
@@ -257,51 +499,8 @@ async function main() {
   // Fetch creative config first to check for customjs
   const config = await fetchCreativeConfig(creativeId);
 
-  const customJsPath = path.join(userDir, 'custom.js');
-  const customJsExists = fs.existsSync(customJsPath);
-  const hasCreativeCustomJs = config.customjs && config.customjs.trim().length > 0;
-
-  // Handle custom.js file creation/update
-  if (resetFlag && hasCreativeCustomJs) {
-    // --reset: overwrite local custom.js with remote version
-    fs.writeFileSync(customJsPath, config.customjs, 'utf-8');
-    console.log('  Reset custom.js (from creative)');
-  } else if (customJsExists) {
-    // custom.js already exists — use it silently (zero-friction repeat run)
-    console.log('  Using existing custom.js');
-  } else if (hasCreativeCustomJs) {
-    // First run with remote customjs available — prompt
-    let choice = 0;
-    if (!noUiFlag) {
-      choice = await promptUser(
-        'Found customJS in this creative. What would you like to use?',
-        [
-          'Use customJS from the creative (recommended)',
-          'Start with blank template'
-        ]
-      );
-    } else {
-      console.log('  No-UI mode: using customJS from creative');
-    }
-
-    if (choice === 0) {
-      fs.writeFileSync(customJsPath, config.customjs, 'utf-8');
-      console.log('  Created custom.js (from creative)');
-    } else {
-      const templatePath = path.join(packageRoot, 'templates', 'custom.js');
-      if (fs.existsSync(templatePath)) {
-        fs.copyFileSync(templatePath, customJsPath);
-        console.log('  Created custom.js (from template)');
-      }
-    }
-  } else {
-    // No customjs in creative — use template if custom.js doesn't exist
-    const templatePath = path.join(packageRoot, 'templates', 'custom.js');
-    if (fs.existsSync(templatePath)) {
-      fs.copyFileSync(templatePath, customJsPath);
-      console.log('  Created custom.js (from template)');
-    }
-  }
+  // Compare local custom.js against the version in Studio before using either
+  const syncResult = await resolveCustomJs(userDir, config);
 
   // Copy AGENTS.md if it doesn't exist
   const agentsMdPath = path.join(userDir, 'AGENTS.md');
@@ -325,14 +524,27 @@ async function main() {
 
   // Save .rad-coder.json config for future no-arg runs
   const radCoderConfigPath = path.join(userDir, '.rad-coder.json');
+  let previousConfig = {};
+  try {
+    previousConfig = JSON.parse(fs.readFileSync(radCoderConfigPath, 'utf-8'));
+  } catch (_) { /* missing or malformed — start fresh */ }
+
   const savedConfig = {
     creativeId: config.creativeId,
     flowlineId: config.flowlineId,
     flowlineName: config.flowlineName,
-    createdAt: fs.existsSync(radCoderConfigPath)
-      ? JSON.parse(fs.readFileSync(radCoderConfigPath, 'utf-8')).createdAt
-      : new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    createdAt: previousConfig.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    sync: {
+      state: syncResult.state,
+      baseHash: sync.hash(sync.readBase(userDir)),
+      baseSource: syncResult.baseSource === 'unchanged'
+        ? (previousConfig.sync && previousConfig.sync.baseSource) || 'studio'
+        : syncResult.baseSource,
+      localHash: sync.hash(sync.readLocal(userDir)),
+      studioHash: sync.hash(config.customjs),
+      studioCheckedAt: new Date().toISOString()
+    }
   };
   fs.writeFileSync(radCoderConfigPath, JSON.stringify(savedConfig, null, 2) + '\n', 'utf-8');
   if (isNewProject) {

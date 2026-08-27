@@ -26,3 +26,7 @@ playwright-report/
 
 # Package lock (use npm ci for reproducible builds)
 package-lock.json
+
+# rad-coder project state (created when testing inside the repo)
+.rad-coder/
+custom.remote.js

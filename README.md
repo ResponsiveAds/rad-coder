@@ -34,6 +34,9 @@ npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a
 
 5. **Hot-reload** - Edit `custom.js`, save, and the browser automatically reloads
 
+6. **Watches Studio** - Warns you if someone edits the creative's custom JS in Studio while
+   you work, so you never paste a stale copy over their changes ([see below](#studio-sync))
+
 ## Usage
 
 ### Basic Usage
@@ -63,6 +66,7 @@ npx rad-coder <id> --editor=cursor  # Use a specific editor
 npx rad-coder <id> --no-editor   # Don't auto-open editor
 npx rad-coder <id> --port=3100   # Preferred starting port (falls back if busy)
 npx rad-coder <id> --no-ui       # Non-interactive mode for automation/agent harnesses
+npx rad-coder <id> --no-sync-check  # Skip comparing local custom.js against Studio
 ```
 
 ### With AI Assistants
@@ -87,8 +91,65 @@ The generated `AGENTS.md` file contains instructions for AI coding assistants. W
 - **Zero configuration** - Just provide a creative ID
 - **Auto-detection** - Extracts flowline, sizes, and settings from Studio
 - **Hot-reload** - Instant feedback when you save changes
+- **Studio sync guard** - Detects when Studio and your local `custom.js` have drifted apart
 - **AI-ready** - Includes documentation for AI coding assistants
 - **Cross-platform** - Works on macOS, Linux, and Windows
+
+## Studio sync
+
+Custom JS lives in two places that can both be edited: **Studio**
+(Creative → Settings → Custom JS) and your local `custom.js`. There is no write API for
+Studio, so getting local code live is a manual copy-paste — which makes a stale local copy
+dangerous. Pasting one over a version a colleague changed silently destroys their work.
+
+rad-coder guards against that. It compares three things: your local `custom.js`, Studio's
+current version, and the **base** — the version the two last agreed on, stored in
+`.rad-coder/base.js`. Comparing all three tells "I have unpushed edits" apart from
+"someone changed Studio":
+
+| State | Meaning | What rad-coder does |
+|-------|---------|---------------------|
+| `in-sync` | local matches Studio | nothing, just confirms it |
+| `local-ahead` | your unpushed edits | one-line note; reminds you Studio needs the paste |
+| `remote-ahead` | Studio changed, you didn't | pulls it (after backing your copy up) |
+| `diverged` | **both sides changed** | writes `custom.remote.js`, warns loudly, changes nothing |
+| `unknown-divergence` | sides differ, no base yet | treated like `diverged` |
+
+The check runs at startup **and** every 60 seconds while the dev server is up, so a session
+left open for hours still notices. When Studio changes under you it is archived immediately.
+
+### Resolving a conflict
+
+1. `custom.remote.js` appears next to `custom.js` — that is Studio's current version.
+2. Use **Diff vs Studio** in the menu (or diff the two files) to see what Studio has that you
+   don't. Analytics and event-tracking code is the usual casualty.
+3. Merge what you need into `custom.js`, then paste the merged file into Studio.
+
+rad-coder stops warning once the two sides match again — it notices the paste-back on its
+next Studio check and records the new base automatically.
+
+### The `.rad-coder/` folder
+
+```
+<creativeId>/
+├── custom.js              your working file
+├── custom.remote.js       Studio's version — only present during a conflict
+└── .rad-coder/
+    ├── base.js            the version local and Studio last agreed on
+    ├── history/<ts>.js    every distinct version ever seen in Studio (last 50)
+    └── backups/<ts>.js    your custom.js before rad-coder overwrote it (last 20)
+```
+
+`history/` is the safety net: if a Studio version is ever lost, it is recoverable here.
+It survives `--fresh` (which deletes everything else in the folder), because it records what
+Studio contained rather than local scratch work. Don't edit or delete anything in
+`.rad-coder/` — it is the only local record of what Studio used to contain.
+
+### Menu actions
+
+While the dev server runs, the interactive menu offers **Check Studio Now**,
+**Diff vs Studio**, and **Pull from Studio** (which backs up your file first).
+**Server Status** shows the current sync state and when Studio was last checked.
 
 ## Requirements
 
@@ -101,6 +162,14 @@ rad-coder fetches your creative's configuration from the ResponsiveAds Studio pr
 The server watches your `custom.js` file for changes and uses WebSocket to signal the browser to reload when you save.
 
 ## API Reference
+
+The dev server exposes:
+
+| Endpoint | Returns |
+|----------|---------|
+| `GET /api/config` | creative config fetched from Studio (flowline, sizes, `customjs`) |
+| `GET /api/custom-js` | the current contents of your local `custom.js` |
+| `GET /api/sync-status` | local-vs-Studio sync `state`, hashes, and last check time |
 
 See the generated `AGENTS.md` file for complete Radical API documentation, including:
 
@@ -205,9 +274,12 @@ rad-coder/
 ├── bin/
 │   └── cli.js          # CLI entry point - handles file copying and starts server
 ├── server/
-│   └── index.js        # Express server - fetches config, serves files, hot-reload
+│   ├── index.js        # Express server - fetches config, serves files, hot-reload
+│   ├── sync.js         # Studio <-> local custom.js comparison, history, backups
+│   └── tui.js          # Interactive terminal menu
 ├── public/
-│   └── test.html       # Test page - loads creative with custom JS
+│   ├── test.html       # Test page - loads creative with custom JS
+│   └── rad-sync-banner.js  # Sync warning bar, injected into the test page
 ├── templates/
 │   ├── custom.js       # Template copied to user's directory
 │   └── AGENTS.md       # AI agent instructions copied to user's directory
@@ -220,7 +292,9 @@ rad-coder/
 |------|---------|
 | `bin/cli.js` | Entry point when user runs `npx rad-coder`. Copies template files to user's directory and starts the server. |
 | `server/index.js` | Express server that fetches creative config from Studio, serves the test page, and handles hot-reload via WebSocket. |
+| `server/sync.js` | Compares local `custom.js` against Studio's version, keeps the base/history/backups in `.rad-coder/`, renders diffs. |
 | `public/test.html` | The test page that loads the creative and injects custom JS via the Radical config. |
+| `public/rad-sync-banner.js` | Warning bar shown on the test page when local and Studio have drifted. Injected server-side by `sendTestHtml()` so it also reaches projects with an older local `test.html`. |
 | `templates/custom.js` | Template for the user's custom JS file. |
 | `templates/AGENTS.md` | Documentation for AI coding assistants. |
 
@@ -264,6 +338,8 @@ When run via `npx`, the CLI sets these environment variables:
 |----------|-------------|
 | `RAD_CODER_USER_DIR` | User's current working directory (where `custom.js` lives) |
 | `RAD_CODER_PACKAGE_DIR` | Package installation directory (where `public/` lives) |
+| `RAD_CODER_STUDIO_POLL_MS` | How often to check Studio for custom JS changes (default `60000`; `0` disables) |
+| `RAD_CODER_FAKE_REMOTE_JS` | Dev/testing only: read "Studio's" custom JS from this file instead of the network, so every sync state can be reproduced locally |
 
 ### Unlinking
 

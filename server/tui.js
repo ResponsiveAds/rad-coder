@@ -280,3 +280,4 @@ class TUI {
 }
 
 module.exports = TUI;
+module.exports.ansi = ansi;

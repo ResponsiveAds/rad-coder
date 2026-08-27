@@ -7,6 +7,8 @@ const fs = require('fs');
 const http = require('http');
 const { spawn } = require('child_process');
 const TUI = require('./tui');
+const { ansi } = require('./tui');
+const sync = require('./sync');
 
 // ============================================================
 // TUI Instance & Logging
@@ -153,12 +155,58 @@ function extractJsonObject(html, startMarker) {
   }
 }
 
+function previewUrlFor(creativeId) {
+  return `https://studio.responsiveads.com/creatives/${creativeId}/preview`;
+}
+
+/**
+ * Pull the creative's custom JS out of the preview page HTML
+ * @returns {string|null}
+ */
+function extractCustomJs(html) {
+  const creativeObj = extractJsonObject(html, 'window.creative = ');
+  if (creativeObj && creativeObj.config && creativeObj.config.customjs) {
+    return creativeObj.config.customjs;
+  }
+  return null;
+}
+
+/**
+ * Re-read just the custom JS from Studio. Unlike fetchCreativeConfig this never
+ * exits the process — it runs on a timer while the dev server is up, so a
+ * transient network blip must not kill a working session.
+ *
+ * @returns {Promise<{ok: boolean, customjs: ?string, error: ?string}>}
+ */
+async function fetchRemoteCustomJs(creativeId) {
+  // Dev/testing seam: we cannot write to Studio, so allow faking its response.
+  const fakePath = process.env.RAD_CODER_FAKE_REMOTE_JS;
+  if (fakePath) {
+    try {
+      return { ok: true, customjs: fs.readFileSync(fakePath, 'utf-8'), error: null };
+    } catch (err) {
+      return { ok: false, customjs: null, error: `fake remote unreadable: ${err.message}` };
+    }
+  }
+
+  try {
+    const response = await fetch(previewUrlFor(creativeId), { cache: 'no-store' });
+    if (!response.ok) {
+      return { ok: false, customjs: null, error: `HTTP ${response.status}: ${response.statusText}` };
+    }
+    const html = await response.text();
+    return { ok: true, customjs: extractCustomJs(html), error: null };
+  } catch (err) {
+    return { ok: false, customjs: null, error: err.message };
+  }
+}
+
 /**
  * Fetch and parse creative configuration from studio preview page
  */
 async function fetchCreativeConfig(creativeId) {
-  const previewUrl = `https://studio.responsiveads.com/creatives/${creativeId}/preview`;
-  
+  const previewUrl = previewUrlFor(creativeId);
+
   log(` Fetching creative config from studio...`);
   log(` URL: ${previewUrl}\n`);
   
@@ -175,12 +223,14 @@ async function fetchCreativeConfig(creativeId) {
     const extractedCreativeId = creativeIdMatch ? creativeIdMatch[1] : creativeId;
     
     // Extract window.creative object to get customjs
-    let customjs = null;
-    const creativeObj = extractJsonObject(html, 'window.creative = ');
-    if (creativeObj && creativeObj.config && creativeObj.config.customjs) {
-      customjs = creativeObj.config.customjs;
+    let customjs = extractCustomJs(html);
+
+    // Dev/testing seam — see fetchRemoteCustomJs
+    if (process.env.RAD_CODER_FAKE_REMOTE_JS) {
+      const faked = await fetchRemoteCustomJs(creativeId);
+      if (faked.ok) customjs = faked.customjs;
     }
-    
+
     // Extract flowlines - try multiple patterns
     let flowlines;
     
@@ -363,13 +413,28 @@ app.use(cors());
 
 function sendTestHtml(res) {
   const localTestHtmlPath = path.join(userDir, 'test.html');
-  if (fs.existsSync(localTestHtmlPath)) {
-    res.sendFile(localTestHtmlPath);
+  const packageTestHtmlPath = path.join(packageDir, 'public', 'test.html');
+  const testHtmlPath = fs.existsSync(localTestHtmlPath) ? localTestHtmlPath : packageTestHtmlPath;
+
+  // Inject the sync banner server-side rather than shipping it in test.html:
+  // every project folder keeps its own copy of test.html, so editing the
+  // packaged file would never reach projects that already exist.
+  let html;
+  try {
+    html = fs.readFileSync(testHtmlPath, 'utf-8');
+  } catch (err) {
+    res.status(500).send(`Could not read test.html: ${err.message}`);
     return;
   }
 
-  const packageTestHtmlPath = path.join(packageDir, 'public', 'test.html');
-  res.sendFile(packageTestHtmlPath);
+  const banner = '<script src="/rad-sync-banner.js"></script>';
+  html = html.includes('</body>')
+    ? html.replace('</body>', `  ${banner}\n</body>`)
+    : html + banner;
+
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.send(html);
 }
 
 // Serve project-local test.html when available so users can customize it per creative
@@ -404,6 +469,24 @@ app.get('/api/custom-js', (req, res) => {
   }
 });
 
+// Report how the local custom.js compares to the version currently in Studio
+app.get('/api/sync-status', (req, res) => {
+  res.set({ 'Cache-Control': 'no-store, no-cache, must-revalidate' });
+  const status = getSyncStatus();
+  res.json({
+    state: status.state,
+    label: describeSyncState(status.state),
+    localHash: status.localHash,
+    studioHash: status.remoteHash,
+    baseHash: status.baseHash,
+    summary: status.summary,
+    checkedAt: status.checkedAt,
+    changedAt: status.changedAt,
+    archivedPath: status.archivedPath,
+    error: status.error,
+  });
+});
+
 // Serve dynamically fetched config as JSON for the test page
 app.get('/api/config', (req, res) => {
   if (!creativeConfig) {
@@ -424,11 +507,182 @@ watcher.on('change', (changedPath) => {
   log(` File changed: ${path.basename(changedPath)}`);
   log(' Reloading browsers...');
   broadcastReload();
+
+  // If the save just brought us level with Studio, say so — and remember it,
+  // so we stop treating the difference as unpushed work.
+  if (studioState.customjs !== null && sync.sameCode(sync.readLocal(userDir), studioState.customjs)) {
+    sync.writeBase(userDir, studioState.customjs);
+    sync.removeRemoteCopy(userDir);
+    log(` ${ansi.green}✓ custom.js now matches Studio${ansi.reset}`);
+  }
 });
 
 watcher.on('error', (error) => {
   log(` Watcher error: ${error.message}`);
 });
+
+// ============================================================
+// Studio Sync Watch
+// ============================================================
+
+// Studio's custom JS can be edited by anyone at any time. Poll for it so a
+// session that has been open for hours notices before its local file is pasted
+// back over somebody else's work.
+const studioState = {
+  customjs: null,      // last custom JS observed in Studio
+  checkedAt: null,     // ISO timestamp of the last successful check
+  error: null,         // last fetch error, if the most recent check failed
+  changedAt: null,     // when Studio last changed under us
+  archivedPath: null,  // where that version was archived
+};
+let studioPollTimer = null;
+let lastLoggedStudioError = null;
+
+function studioPollInterval() {
+  const raw = process.env.RAD_CODER_STUDIO_POLL_MS;
+  if (raw === undefined) return 60000;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) return 60000;
+  return parsed; // 0 disables polling
+}
+
+/** Current local-vs-Studio state, computed fresh from disk */
+function getSyncStatus() {
+  const local = sync.readLocal(userDir);
+  const status = sync.classify({
+    local,
+    remote: studioState.customjs,
+    base: sync.readBase(userDir),
+  });
+
+  return {
+    ...status,
+    checkedAt: studioState.checkedAt,
+    changedAt: studioState.changedAt,
+    error: studioState.error,
+    archivedPath: studioState.archivedPath
+      ? sync.relative(userDir, studioState.archivedPath)
+      : null,
+    // Always expressed as "what Studio has that local does not"
+    summary: status.state === 'in-sync' || status.state === 'no-local'
+      ? null
+      : sync.diffSummary(local, studioState.customjs),
+  };
+}
+
+/**
+ * Check Studio once. Reports only real changes, so it is quiet by default.
+ * @param {boolean} announce - log even when nothing changed (manual check)
+ */
+async function checkStudio(announce = false) {
+  const id = creativeConfig ? creativeConfig.creativeId : creativeId;
+  const result = await fetchRemoteCustomJs(id);
+
+  if (!result.ok) {
+    studioState.error = result.error;
+    // Don't spam an unreachable network — log once per distinct error.
+    if (announce || result.error !== lastLoggedStudioError) {
+      lastLoggedStudioError = result.error;
+      log(` ${ansi.dim}Could not check Studio: ${result.error}${ansi.reset}`);
+    }
+    return getSyncStatus();
+  }
+
+  studioState.error = null;
+  lastLoggedStudioError = null;
+  studioState.checkedAt = new Date().toISOString();
+
+  const unchanged = sync.sameCode(result.customjs, studioState.customjs);
+  studioState.customjs = result.customjs;
+
+  if (unchanged) {
+    if (announce) {
+      const status = getSyncStatus();
+      log(` ${ansi.dim}Studio unchanged (${describeSyncState(status.state)})${ansi.reset}`);
+    }
+    return getSyncStatus();
+  }
+
+  // Studio moved. Keep a copy of the version we are about to stop seeing.
+  studioState.changedAt = studioState.checkedAt;
+  studioState.archivedPath = sync.archiveRemote(userDir, result.customjs);
+
+  const local = sync.readLocal(userDir);
+  if (sync.sameCode(local, result.customjs)) {
+    sync.writeBase(userDir, result.customjs);
+    sync.removeRemoteCopy(userDir);
+    log('');
+    log(` ${ansi.green}✓ Studio now matches your local custom.js — in sync${ansi.reset}`);
+    log('');
+    return getSyncStatus();
+  }
+
+  const remoteCopy = sync.writeRemoteCopy(userDir, result.customjs);
+  log('');
+  log(` ${ansi.yellow}${ansi.bold}⚠ STUDIO CHANGED — someone edited this creative's custom JS${ansi.reset}`);
+  log(` ${ansi.yellow}  your local custom.js no longer matches Studio${ansi.reset}`);
+  log(` ${ansi.yellow}  Studio vs your local: ${sync.diffSummary(local, result.customjs)}${ansi.reset}`);
+  log(` ${ansi.yellow}  Studio version → ${sync.relative(userDir, remoteCopy)}${ansi.reset}`);
+  if (studioState.archivedPath) {
+    log(` ${ansi.yellow}  archived copy  → ${sync.relative(userDir, studioState.archivedPath)}${ansi.reset}`);
+  }
+  log(` ${ansi.yellow}  ► Do NOT paste your local file into Studio before diffing the two${ansi.reset}`);
+  log('');
+
+  return getSyncStatus();
+}
+
+function describeSyncState(state) {
+  switch (state) {
+    case 'in-sync': return 'local matches Studio';
+    case 'local-ahead': return 'local edits not in Studio yet';
+    case 'remote-ahead': return 'Studio is newer than local';
+    case 'diverged': return 'CONFLICT — both sides changed';
+    case 'unknown-divergence': return 'CONFLICT — differ, no sync history';
+    case 'no-local': return 'no local custom.js';
+    default: return state;
+  }
+}
+
+function startStudioWatch() {
+  // Seed from the config already fetched at startup so the state cli.js just
+  // reported is not immediately re-reported here.
+  if (studioState.customjs === null && creativeConfig) {
+    studioState.customjs = creativeConfig.customjs;
+    studioState.checkedAt = new Date().toISOString();
+  }
+
+  const interval = studioPollInterval();
+  if (interval === 0) {
+    log(` ${ansi.dim}Studio change watch disabled (RAD_CODER_STUDIO_POLL_MS=0)${ansi.reset}`);
+    return;
+  }
+
+  studioPollTimer = setInterval(() => {
+    checkStudio(false).catch((err) => {
+      log(` ${ansi.dim}Studio check failed: ${err.message}${ansi.reset}`);
+    });
+  }, interval);
+  studioPollTimer.unref();
+}
+
+/** Take the Studio version, keeping a backup of what we replace */
+function pullFromStudio() {
+  if (studioState.customjs === null) {
+    log(' Nothing to pull — Studio has no custom JS');
+    return;
+  }
+
+  const backup = sync.backupLocal(userDir);
+  fs.writeFileSync(path.join(userDir, 'custom.js'), studioState.customjs, 'utf-8');
+  sync.writeBase(userDir, studioState.customjs);
+  sync.removeRemoteCopy(userDir);
+  log(` ${ansi.green}↓ Pulled custom.js from Studio${ansi.reset}`);
+  if (backup) {
+    log(`   Previous version saved to ${sync.relative(userDir, backup)}`);
+  }
+  broadcastReload();
+}
 
 // ============================================================
 // Start Server
@@ -536,6 +790,9 @@ async function start(prefetchedConfig = null) {
     openEditor();
   }
 
+  // Watch Studio for custom JS edits made by other people
+  startStudioWatch();
+
   // Start interactive TUI unless disabled
   if (!noUiMode && process.stdin.isTTY) {
     await new Promise(resolve => setTimeout(resolve, 300));
@@ -563,6 +820,9 @@ function getMainMenuItems() {
   }
 
   items.push(
+    { label: 'Check Studio Now', id: 'sync-check' },
+    { label: 'Diff vs Studio', id: 'sync-diff' },
+    { label: 'Pull from Studio', id: 'sync-pull' },
     { label: 'Server Status', id: 'status' },
     { label: 'Clear Logs', id: 'clear' },
     { label: 'Restart Server', id: 'restart' },
@@ -631,8 +891,39 @@ function startInteractiveMenu() {
         tui.updateMenu(getFlowlineMenuItems());
         break;
 
+      case 'sync-check':
+        log(' Checking Studio for custom JS changes...');
+        checkStudio(true).catch((err) => {
+          log(` ✗ Studio check failed: ${err.message}`);
+        });
+        break;
+
+      case 'sync-diff': {
+        const local = sync.readLocal(userDir);
+        if (studioState.customjs === null && local === null) {
+          log(' Nothing to diff — no custom JS locally or in Studio');
+          break;
+        }
+        const diff = sync.renderDiff(userDir, local, studioState.customjs, 'local-custom.js', 'studio-custom.js');
+        const diffLines = diff.split('\n');
+        log('');
+        log(' ── local custom.js vs Studio ──────');
+        diffLines.slice(0, 80).forEach((line) => log(` ${line}`));
+        if (diffLines.length > 80) {
+          log(` ${ansi.dim}... ${diffLines.length - 80} more lines (see custom.remote.js)${ansi.reset}`);
+        }
+        log(' ───────────────────────────────────');
+        log('');
+        break;
+      }
+
+      case 'sync-pull':
+        pullFromStudio();
+        break;
+
       case 'status': {
         const { port, host } = creativeConfig.server;
+        const syncStatus = getSyncStatus();
         log('');
         log(' ── Server Status ──────────────────');
         log(` Creative ID : ${creativeConfig.creativeId}`);
@@ -643,6 +934,8 @@ function startInteractiveMenu() {
         log(` Server      : http://${host}:${port}`);
         log(` Directory   : ${userDir}`);
         log(` Browsers    : ${clients.size} connected`);
+        log(` Studio sync : ${describeSyncState(syncStatus.state)}${syncStatus.summary ? ` (${syncStatus.summary})` : ''}`);
+        log(` Last check  : ${syncStatus.checkedAt || 'never'}${syncStatus.error ? ` — ${syncStatus.error}` : ''}`);
         log(' ───────────────────────────────────');
         log('');
         break;
@@ -703,6 +996,11 @@ function gracefulShutdown() {
     process.exit(130);
   }
   isShuttingDown = true;
+
+  if (studioPollTimer) {
+    clearInterval(studioPollTimer);
+    studioPollTimer = null;
+  }
 
   if (tui) {
     tui.destroy();
