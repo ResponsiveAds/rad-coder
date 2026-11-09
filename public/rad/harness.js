@@ -265,6 +265,8 @@
     frame.setAttribute('marginheight', '0');
     frame.setAttribute('frameborder', '0');
     frame.setAttribute('aria-label', 'Advertisement');
+    // Lets tools (e.g. RAD Assistant's analytics capture) recognise the ad server's frame
+    frame.setAttribute('data-rad-harness-frame', '');
     var sandbox = attr('sandbox');
     if (sandbox) frame.setAttribute('sandbox', sandbox === 'gpt' ? GPT_SANDBOX : sandbox);
     frame.style.cssText = 'border: 0px; vertical-align: bottom;';
