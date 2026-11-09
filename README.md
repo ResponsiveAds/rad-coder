@@ -24,7 +24,8 @@ npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a
 
 1. **Creates files** in your current directory:
    - `custom.js` - Your custom JavaScript code
-   - `AGENTS.md` - Instructions for AI coding assistants (Copilot, Claude, etc.)
+   - `AGENTS.md` - Instructions for AI coding assistants (Copilot, Codex, Cursor, Claude…)
+   - `CLAUDE.md` - One line (`@AGENTS.md`) so Claude Code loads the same instructions
 
 2. **Fetches creative config** from ResponsiveAds Studio automatically
 
@@ -36,6 +37,13 @@ npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a
 
 6. **Watches Studio** - Warns you if someone edits the creative's custom JS in Studio while
    you work, so you never paste a stale copy over their changes ([see below](#studio-sync))
+
+7. **Format JS** - Pulls the format's Custom JS into `format.js` when the creative has one,
+   applies it on the test page like a live tag would, and guards it like `custom.js`
+   ([see below](#format-js))
+
+8. **Client test pages** - Test the creative and its format JS on a copy of the publisher's
+   page, in a GPT friendly iframe or a GAM SafeFrame ([see below](#client-test-pages))
 
 ## Usage
 
@@ -60,23 +68,29 @@ The CLI auto-detects the creative from `.rad-coder.json` (or the folder name). Y
 ### Options
 
 ```bash
-npx rad-coder <id> --reset       # Overwrite local custom.js with the remote version
-npx rad-coder <id> --fresh       # Delete folder and start from scratch
+npx rad-coder <id> --reset       # Overwrite local custom.js and format.js with the Studio versions
+npx rad-coder <id> --fresh       # Delete folder and start from scratch (keeps pages/ and the Studio archive)
 npx rad-coder <id> --editor=cursor  # Use a specific editor
 npx rad-coder <id> --no-editor   # Don't auto-open editor
 npx rad-coder <id> --port=3100   # Preferred starting port (falls back if busy)
 npx rad-coder <id> --no-ui       # Non-interactive mode for automation/agent harnesses
-npx rad-coder <id> --no-sync-check  # Skip comparing local custom.js against Studio
+npx rad-coder <id> --no-sync-check  # Skip comparing local custom.js / format.js against Studio
+npx rad-coder <id> --flowline=sidebar  # Start on a flowline (id, or part of its name)
+npx rad-coder <id> --page=atlantic     # Open pages/atlantic.html instead of test.html
+npx rad-coder <id> --new-page=atlantic # Create pages/atlantic.html from the template and open it
 ```
 
 ### With AI Assistants
 
-The generated `AGENTS.md` file contains instructions for AI coding assistants. When using VS Code with Copilot or other AI tools, they can read this file to understand:
+The generated `AGENTS.md` is the whole guide an AI assistant needs: how to talk to people who
+aren't developers, how to discover the creative's elements, which Radical hook to use, how to
+verify and hand off, the Studio sync rules, format JS and client test pages, and the full
+Radical API. `CLAUDE.md` imports it for Claude Code. Two longer references are served on
+demand: `http://localhost:3000/rad/docs/dynamic-content.md` and
+`http://localhost:3000/rad/docs/troubleshooting.md`.
 
-- How to use the Radical API
-- Available lifecycle hooks (`onBeforeRender`, `onLoad`, `onRender`)
-- Component methods (Carousel, TextBox, etc.)
-- Best practices for ResponsiveAds creatives
+When a newer rad-coder ships a newer guide, an unedited `AGENTS.md` is replaced on the next
+start (the old one is backed up in `.rad-coder/backups/`). A copy with your own edits is kept.
 
 ### Workflow
 
@@ -91,7 +105,9 @@ The generated `AGENTS.md` file contains instructions for AI coding assistants. W
 - **Zero configuration** - Just provide a creative ID
 - **Auto-detection** - Extracts flowline, sizes, and settings from Studio
 - **Hot-reload** - Instant feedback when you save changes
-- **Studio sync guard** - Detects when Studio and your local `custom.js` have drifted apart
+- **Studio sync guard** - Detects when Studio and your local `custom.js` / `format.js` have drifted apart
+- **Format JS** - Edit a format's Custom JS locally and see it on the test page
+- **Client test pages** - Friendly iframe and SafeFrame emulation for publisher page mimics
 - **AI-ready** - Includes documentation for AI coding assistants
 - **Cross-platform** - Works on macOS, Linux, and Windows
 
@@ -134,10 +150,14 @@ next Studio check and records the new base automatically.
 <creativeId>/
 ├── custom.js              your working file
 ├── custom.remote.js       Studio's version — only present during a conflict
+├── format.js              the format's Custom JS — only when the creative has one
+├── format.remote.js       Studio's format JS — only present during a conflict
+├── pages/                 client test pages (yours; kept by --fresh)
 └── .rad-coder/
-    ├── base.js            the version local and Studio last agreed on
-    ├── history/<ts>.js    every distinct version ever seen in Studio (last 50)
-    └── backups/<ts>.js    your custom.js before rad-coder overwrote it (last 20)
+    ├── base.js            the custom JS local and Studio last agreed on
+    ├── history/<ts>.js    every distinct custom JS ever seen in Studio (last 50)
+    ├── format/            the same base + history for format.js
+    └── backups/<ts>.js    custom-*.js / format-*.js before rad-coder overwrote them (last 20 each)
 ```
 
 `history/` is the safety net: if a Studio version is ever lost, it is recoverable here.
@@ -150,6 +170,81 @@ Studio contained rather than local scratch work. Don't edit or delete anything i
 While the dev server runs, the interactive menu offers **Check Studio Now**,
 **Diff vs Studio**, and **Pull from Studio** (which backs up your file first).
 **Server Status** shows the current sync state and when Studio was last checked.
+
+## Format JS
+
+A creative's flowlines ("formats" in Studio) can carry their own Custom JS
+(Format → Custom JS). It decides how the ad behaves on the publisher's page: sticky
+leaderboards, sidebars that fit the window, resizing the ad server's iframe.
+
+When any flowline of the creative has format JS, rad-coder pulls it into **`format.js`**:
+
+- `format.js` belongs to one flowline (recorded as `format.flowlineId` in `.rad-coder.json`):
+  the selected flowline if it has format JS, otherwise the first flowline that has some. It
+  also belongs to every other flowline whose Studio format JS is identical (copies of the same
+  format, e.g. a 400-tall and a 250-tall version).
+- Those flowlines render with your local `format.js`. Every other flowline renders with its own
+  Studio format JS, exactly as it would live.
+- No format JS in Studio? No `format.js` is created. To start one, create the file (there is a
+  starter at `http://localhost:3000/rad/templates/format.js`); it belongs to the flowline you
+  are testing.
+- The test page applies it the way a live tag does: as `flowlineCustomjs` inside the creative,
+  **and** as a second copy in the page once Radical has loaded (live, the format JS is appended
+  to the deployment script `d-<id>.js`). Open `test.html?noformat=1` to compare without it.
+  This is injected by the server, so projects with an older `test.html` get it too.
+- Same Studio sync guard as `custom.js`: base in `.rad-coder/format/base.js`, Studio history in
+  `.rad-coder/format/history/`, `format.remote.js` on a conflict, warnings in the terminal and
+  the browser, and menu items **Diff format.js vs Studio** / **Pull format.js from Studio**.
+- To go live, paste `format.js` into Format → Custom JS of that flowline in Studio (and of each
+  identical copy). If the format is shared with other creatives, rad-coder warns you: pasting
+  changes every creative that uses it.
+
+## Client test pages
+
+Some formats only make sense on the publisher's page: a sticky leaderboard under a sticky
+nav, a sidebar in a fixed slot. For those, build a copy of the publisher page in
+**`pages/<name>.html`** in the project folder. rad-coder serves it at
+`http://localhost:3000/pages/<name>.html`, with hot reload on every save of `custom.js`,
+`format.js` or anything in `pages/`.
+
+```bash
+npx rad-coder <id> --new-page=atlantic   # start from the template (it lists what to measure)
+npx rad-coder <id> --page=atlantic       # open it instead of test.html
+```
+
+The page holds the publisher's layout and the slot's markup. The ad goes in with one script
+tag per slot; the harness does the rest (config, custom.js, format JS, the ad server's iframe,
+a debug panel):
+
+```html
+<script src="/rad/harness.js"
+        data-slot="#leaderboard-article"
+        data-frame="friendly"
+        data-size="4x4"
+        data-flowline="400H"
+        data-debug-events="rad-sticky-leaderboard"></script>
+```
+
+| Attribute | Meaning |
+|-----------|---------|
+| `data-slot` | element the ad goes into (required) |
+| `data-frame` | `friendly` — GPT friendly iframe (default); `safeframe` — cross-origin GAM SafeFrame with a `$sf.ext` shim; `none` — tag straight in the page |
+| `data-size` | size of the ad server's iframe, e.g. `4x4`, `600x1200` |
+| `data-flowline` | flowline id or part of its name (default: the selected flowline, or format.js's flowline) |
+| `data-options` | JSON merged into the Radical options, e.g. `{"singleSize":{"width":600,"height":1200}}` |
+| `data-frame-id`, `data-sandbox` | copy the publisher's iframe id / `sandbox="gpt"` |
+| `data-debug-events` | CustomEvent names (fired by your format JS) to show in the debug panel |
+
+- Query parameters override the attributes: `?flowline=`, `?frame=`, `?noformat=1`, `?debug=0`.
+- **SafeFrame emulation**: the dev server listens on both `127.0.0.1` and `::1`, and the
+  harness loads the ad frame from the other name (`localhost` ↔ `127.0.0.1`), so the frame
+  really is cross-origin. Radical then behaves as in a GAM SafeFrame (no flowline CSS, no
+  `flowlineCustomjs`; only the deployment-script copy of the format JS runs).
+- The page receives `rad:slot-render-ended` (like GPT's slotRenderEnded) to mimic what the
+  publisher's script does when an ad renders.
+- `window.__radHarness` exposes slots, errors and events for browser tools and AI agents;
+  `await __radHarness.evalInFrame('return …')` runs code inside the ad frame, even cross-origin.
+- `--fresh` keeps `pages/`.
 
 ## Requirements
 
@@ -167,9 +262,13 @@ The dev server exposes:
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /api/config` | creative config fetched from Studio (flowline, sizes, `customjs`) |
+| `GET /api/config` | creative config fetched from Studio (flowline, sizes, `customjs`, `format`) |
 | `GET /api/custom-js` | the current contents of your local `custom.js` |
-| `GET /api/sync-status` | local-vs-Studio sync `state`, hashes, and last check time |
+| `GET /api/sync-status` | local-vs-Studio sync `state`, hashes, and last check time for custom.js; the same for format.js under `format` |
+| `GET /api/format-js?flowline=<id>` | the format JS that flowline renders with: `code`, `source` (`local` / `studio` / `none`), and which flowlines `format.js` belongs to |
+| `GET /api/pages` | the client test pages in `pages/` |
+| `GET /pages/<name>.html` | a client test page (with hot reload injected) |
+| `GET /rad/templates/page.html`, `/rad/templates/format.js` | starter files to copy into the project |
 
 See the generated `AGENTS.md` file for complete Radical API documentation, including:
 
@@ -275,13 +374,21 @@ rad-coder/
 │   └── cli.js          # CLI entry point - handles file copying and starts server
 ├── server/
 │   ├── index.js        # Express server - fetches config, serves files, hot-reload
-│   ├── sync.js         # Studio <-> local custom.js comparison, history, backups
+│   ├── studio.js       # Reads the creative (custom JS, flowlines, format JS) from the preview page
+│   ├── sync.js         # Studio <-> local custom.js / format.js comparison, history, backups
+│   ├── formats.js      # Which flowlines format.js belongs to
 │   └── tui.js          # Interactive terminal menu
 ├── public/
 │   ├── test.html       # Test page - loads creative with custom JS
-│   └── rad-sync-banner.js  # Sync warning bar, injected into the test page
+│   ├── rad-sync-banner.js  # Sync warning bar, injected into the test page
+│   └── rad/
+│       ├── harness.js  # Puts the creative into a slot of a client test page
+│       ├── frame.html  # SafeFrame stand-in (cross-origin frame with a $sf.ext shim)
+│       └── live.js     # Hot reload for client test pages
 ├── templates/
 │   ├── custom.js       # Template copied to user's directory
+│   ├── format.js       # Starter format JS (served at /rad/templates/format.js)
+│   ├── page.html       # Starter client test page (--new-page)
 │   └── AGENTS.md       # AI agent instructions copied to user's directory
 └── package.json
 ```
@@ -323,12 +430,15 @@ The creative is rendered in `public/test.html`. Key areas:
 
 ### Modifying Config Extraction
 
-Creative config is fetched from Studio in `server/index.js` in the `fetchCreativeConfig()` function. This parses the preview page HTML to extract:
+Creative config is read from Studio's preview page by `server/studio.js` (`parsePreview()`),
+which extracts:
 
 - `window.creativeId`
-- `window.flowlines` (array of flowline objects)
+- `window.creative` → `config.customjs` (the creative Custom JS)
+- `window.flowlines` (array of flowline objects); each `flowline.customJS` is that format's Custom JS
 
-The first flowline is selected by default. To change this behavior, modify the logic around line 150 in `server/index.js`.
+`fetchCreativeConfig()` in `server/index.js` turns that into the config the test page uses.
+The first flowline is selected by default (`--flowline` picks another).
 
 ### Environment Variables
 
@@ -340,6 +450,8 @@ When run via `npx`, the CLI sets these environment variables:
 | `RAD_CODER_PACKAGE_DIR` | Package installation directory (where `public/` lives) |
 | `RAD_CODER_STUDIO_POLL_MS` | How often to check Studio for custom JS changes (default `60000`; `0` disables) |
 | `RAD_CODER_FAKE_REMOTE_JS` | Dev/testing only: read "Studio's" custom JS from this file instead of the network, so every sync state can be reproduced locally |
+| `RAD_CODER_FAKE_REMOTE_FORMAT` | Dev/testing only: read "Studio's" format JS from this file (applied to the flowlines that have format JS in Studio, or to the ids in `RAD_CODER_FAKE_FORMAT_FLOWLINES`) |
+| `RAD_CODER_OPEN_PATH` | Page the browser opens (set by `--page` / `--new-page`) |
 
 ### Unlinking
 

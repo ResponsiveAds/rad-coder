@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>rad-coder SafeFrame</title>
+  <!--
+    Stand-in for a GAM SafeFrame, used by /rad/harness.js in data-frame="safeframe"
+    mode. The harness loads this page from the other loopback name (localhost vs
+    127.0.0.1), so it is cross-origin to the client page: window.top cannot be
+    touched, exactly like a real SafeFrame. Settings arrive in the URL hash.
+    The $sf.ext shim gets its geometry from the client page by postMessage.
+  -->
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
+  </style>
+  <script>
+    (function () {
+      // --- minimal GAM SafeFrame API ($sf.ext) -------------------------------
+      var geom = null;
+      var callbacks = [];
+      var expanded = false;
+      function tell(msg) {
+        msg.source = 'rad-harness';
+        try { parent.postMessage(msg, '*'); } catch (e) { /* no parent */ }
+      }
+      function notify(status, data) {
+        callbacks.forEach(function (cb) { try { cb(status, data || {}); } catch (e) { /* creative's problem */ } });
+      }
+      window.$sf = {
+        ext: {
+          geom: function () { return geom; },
+          register: function (w, h, cb) { if (typeof cb === 'function') callbacks.push(cb); },
+          meta: function () { return {}; },
+          status: function () { return expanded ? 'expanded' : 'collapsed'; },
+          supports: function () { return { 'exp-ovr': true, 'exp-push': false, 'read-cookie': false, 'write-cookie': false }; },
+          inViewPercentage: function () { return geom && geom.self ? Math.round(geom.self.iv * 100) : 0; },
+          winHasFocus: function () { return document.hasFocus(); },
+          expand: function (delta) { expanded = true; tell({ type: 'expand', delta: delta }); notify('expanded'); },
+          collapse: function () { expanded = false; tell({ type: 'collapse' }); notify('collapsed'); }
+        }
+      };
+      window.addEventListener('message', function (e) {
+        if (e.source !== window.parent || !e.data || e.data.source !== 'rad-harness') return;
+        if (e.data.type === 'geom') {
+          geom = e.data.geom;
+          notify('geom-update');
+        } else if (e.data.type === 'eval') {
+          // Lets tools on the client page look inside this cross-origin frame
+          var reply = { type: 'eval-result', id: e.data.id };
+          try { reply.result = JSON.parse(JSON.stringify((new Function(e.data.code))()) || 'null'); } catch (err) { reply.error = String(err); }
+          tell(reply);
+        }
+      });
+      window.__radFrameTell = tell;
+    })();
+  </script>
+</head>
+<body>
+  <script>
+    (function () {
+      var tell = window.__radFrameTell;
+      var init = {};
+      try { init = JSON.parse(decodeURIComponent(location.hash.slice(1)) || '{}'); } catch (e) { /* defaults */ }
+
+      window.addEventListener('error', function (e) { tell({ type: 'error', message: e.message || String(e) }); });
+      (init.debugEvents || []).forEach(function (name) {
+        window.addEventListener(name, function (e) {
+          var detail;
+          try { detail = JSON.parse(JSON.stringify(e.detail)); } catch (err) { detail = String(e.detail); }
+          tell({ type: 'event', name: name, detail: detail });
+        });
+      });
+
+      async function getJson(url) {
+        var res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error(url + ' → HTTP ' + res.status);
+        return res.json();
+      }
+
+      async function run() {
+        var config = await getJson('/api/config');
+        var custom = await getJson('/api/custom-js');
+        var flowline = (config.allFlowlines || []).find(function (f) { return f.id === init.flowline; }) ||
+          { id: config.flowlineId, sizes: config.sizes, isFluid: config.isFluid };
+        var formatJs = init.noformat ? '' : (await getJson('/api/format-js?flowline=' + encodeURIComponent(flowline.id))).code || '';
+
+        var options = {
+          https: true,
+          flowline: flowline.id,
+          sizes: flowline.sizes,
+          isFluid: flowline.isFluid,
+          adSource: config.adSource,
+          flSource: 'https://s3-eu-west-1.amazonaws.com/publish.responsiveads.com/flowlines/',
+          tracking: false,
+          screenshot: false,
+          config: { _default: { selectedVariant: '', customjs: custom.code || '', flowlineCustomjs: formatJs } }
+        };
+        var extra = init.options || {};
+        Object.keys(extra).forEach(function (k) {
+          if (k === 'config' && extra.config && extra.config._default) Object.assign(options.config._default, extra.config._default);
+          else options[k] = extra[k];
+        });
+
+        var ins = document.createElement('ins');
+        ins.id = 'responsivead-' + config.creativeId;
+        document.body.appendChild(ins);
+        window.Radical = window.Radical || [];
+        // Radical detects the cross-origin parent itself
+        window.Radical.push([config.creativeId, options]);
+
+        var lib = document.createElement('script');
+        lib.src = config.radicalScript;
+        lib.onload = function () {
+          // Live, the format JS is also appended to the deployment script d-<id>.js,
+          // so it runs in THIS window — the SafeFrame document — right after Radical
+          // loaded. In a SafeFrame that is the only copy that can reach the creative.
+          if (formatJs) {
+            var s = document.createElement('script');
+            s.className = 'rad-coder-deployment-format-js';
+            s.textContent = '// Deployment specific custom format JS (simulated by rad-coder)\n' + formatJs;
+            document.head.appendChild(s);
+          }
+          tell({ type: 'rendered' });
+        };
+        lib.onerror = function () { tell({ type: 'error', message: 'could not load ' + config.radicalScript }); };
+        document.body.appendChild(lib);
+      }
+
+      run().catch(function (err) {
+        console.error(err);
+        tell({ type: 'error', message: err.message || String(err) });
+      });
+    })();
+  </script>
+</body>
+</html>

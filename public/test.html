@@ -209,7 +209,11 @@
         console.error('Failed to load custom JS:', error);
       }
       
-      // Push the ad configuration with customjs as inline code string
+      // Push the ad configuration with customjs as inline code string.
+      // The format JS (format.js, or the flowline's format JS from Studio) is added
+      // by the dev server: /rad/test-format.js, injected into <head>, sets
+      // config._default.flowlineCustomjs on this push and runs the deployment-script
+      // copy once Radical loaded. Open test.html?noformat=1 to render without it.
       Radical.push([id, {
         https: true,
         flowline: config.flowlineId,
@@ -249,7 +253,7 @@
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === 'reload') {
-          showToast('Reloading...');
+          showToast(data.file ? `Reloading — ${data.file} changed` : 'Reloading...');
           // Small delay to show the toast
           setTimeout(() => {
             location.reload();

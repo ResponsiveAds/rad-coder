@@ -13,10 +13,17 @@
  * *base*: the Studio content as of the last time the two sides were known to
  * agree. Comparing local/remote/base gives an unambiguous state (see classify).
  *
+ * The same applies to the format JS (Studio: Format → Custom JS), which rad-coder
+ * keeps in format.js. Every function takes a `kind` ('custom' | 'format') that
+ * picks the file set; it defaults to 'custom'.
+ *
  * State lives in a `.rad-coder/` folder next to custom.js:
- *   base.js              the base snapshot
- *   history/<ISO>.js     every distinct Studio version we ever observed
+ *   base.js              the base snapshot of custom.js
+ *   history/<ISO>.js     every distinct Studio custom JS we ever observed
+ *   format/base.js       the base snapshot of format.js
+ *   format/history/      every distinct Studio format JS we ever observed
  *   backups/custom-*.js  local custom.js, saved before any overwrite
+ *   backups/format-*.js  local format.js, saved before any overwrite
  */
 
 const crypto = require('crypto');
@@ -27,6 +34,32 @@ const { execFileSync } = require('child_process');
 const SYNC_DIR = '.rad-coder';
 const MAX_HISTORY = 50;
 const MAX_BACKUPS = 20;
+
+// Where each kind of code lives, relative to the project folder
+const KINDS = {
+  custom: {
+    file: 'custom.js',
+    remote: 'custom.remote.js',
+    base: path.join(SYNC_DIR, 'base.js'),
+    history: path.join(SYNC_DIR, 'history'),
+    backupPrefix: 'custom-',
+    studioField: 'Creative → Settings → Custom JS',
+  },
+  format: {
+    file: 'format.js',
+    remote: 'format.remote.js',
+    base: path.join(SYNC_DIR, 'format', 'base.js'),
+    history: path.join(SYNC_DIR, 'format', 'history'),
+    backupPrefix: 'format-',
+    studioField: 'Format → Custom JS',
+  },
+};
+
+function kindInfo(kind = 'custom') {
+  const info = KINDS[kind];
+  if (!info) throw new Error(`Unknown code kind: ${kind}`);
+  return info;
+}
 
 // ============================================================
 // Comparison
@@ -238,18 +271,18 @@ function readFileOrNull(filePath) {
   }
 }
 
-function readLocal(userDir) {
-  return readFileOrNull(path.join(userDir, 'custom.js'));
+function readLocal(userDir, kind = 'custom') {
+  return readFileOrNull(path.join(userDir, kindInfo(kind).file));
 }
 
-function readBase(userDir) {
-  return readFileOrNull(path.join(syncDir(userDir), 'base.js'));
+function readBase(userDir, kind = 'custom') {
+  return readFileOrNull(path.join(userDir, kindInfo(kind).base));
 }
 
 /** Record the Studio content the two sides are now considered to agree on */
-function writeBase(userDir, code) {
-  const basePath = path.join(syncDir(userDir), 'base.js');
-  ensureDir(syncDir(userDir));
+function writeBase(userDir, code, kind = 'custom') {
+  const basePath = path.join(userDir, kindInfo(kind).base);
+  ensureDir(path.dirname(basePath));
   fs.writeFileSync(basePath, String(code == null ? '' : code), 'utf-8');
   return basePath;
 }
@@ -259,23 +292,26 @@ function stamp() {
   return new Date().toISOString().replace(/\.\d+Z$/, '').replace(/:/g, '-');
 }
 
-function newestEntry(dir) {
+function jsEntries(dir, prefix = '') {
   try {
-    const entries = fs.readdirSync(dir).filter(f => f.endsWith('.js')).sort();
-    if (entries.length === 0) return null;
-    return path.join(dir, entries[entries.length - 1]);
+    return fs.readdirSync(dir).filter(f => f.endsWith('.js') && f.startsWith(prefix)).sort();
   } catch (_) {
-    return null;
+    return [];
   }
 }
 
-function pruneDir(dir, keep) {
-  try {
-    const entries = fs.readdirSync(dir).filter(f => f.endsWith('.js')).sort();
-    for (const stale of entries.slice(0, Math.max(0, entries.length - keep))) {
+function newestEntry(dir) {
+  const entries = jsEntries(dir);
+  return entries.length ? path.join(dir, entries[entries.length - 1]) : null;
+}
+
+function pruneDir(dir, keep, prefix = '') {
+  const entries = jsEntries(dir, prefix);
+  for (const stale of entries.slice(0, Math.max(0, entries.length - keep))) {
+    try {
       fs.rmSync(path.join(dir, stale), { force: true });
-    }
-  } catch (_) { /* best effort */ }
+    } catch (_) { /* best effort */ }
+  }
 }
 
 /**
@@ -284,10 +320,10 @@ function pruneDir(dir, keep) {
  * while rad-coder was watching stays recoverable on disk.
  * @returns {string|null} path written, or null if nothing to archive
  */
-function archiveRemote(userDir, code) {
+function archiveRemote(userDir, code, kind = 'custom') {
   if (normalize(code).length === 0) return null;
 
-  const dir = ensureDir(path.join(syncDir(userDir), 'history'));
+  const dir = ensureDir(path.join(userDir, kindInfo(kind).history));
   const newest = newestEntry(dir);
   if (newest && sameCode(readFileOrNull(newest), code)) return null;
 
@@ -298,17 +334,18 @@ function archiveRemote(userDir, code) {
 }
 
 /**
- * Copy the current custom.js aside before it gets overwritten.
+ * Copy the current local file aside before it gets overwritten.
  * @returns {string|null} path written, or null if there was nothing to back up
  */
-function backupLocal(userDir) {
-  const local = readLocal(userDir);
+function backupLocal(userDir, kind = 'custom') {
+  const local = readLocal(userDir, kind);
   if (local == null) return null;
 
+  const { backupPrefix } = kindInfo(kind);
   const dir = ensureDir(path.join(syncDir(userDir), 'backups'));
-  const target = path.join(dir, `custom-${stamp()}.js`);
+  const target = path.join(dir, `${backupPrefix}${stamp()}.js`);
   fs.writeFileSync(target, local, 'utf-8');
-  pruneDir(dir, MAX_BACKUPS);
+  pruneDir(dir, MAX_BACKUPS, backupPrefix);
   return target;
 }
 
@@ -318,41 +355,34 @@ function backupLocal(userDir) {
  * Studio contained, so it must survive a local reset.
  * @returns {Array<{name: string, code: string}>}
  */
-function takeHistory(userDir) {
-  const dir = path.join(syncDir(userDir), 'history');
-  try {
-    return fs.readdirSync(dir)
-      .filter(f => f.endsWith('.js'))
-      .sort()
-      .map(name => ({ name, code: fs.readFileSync(path.join(dir, name), 'utf-8') }));
-  } catch (_) {
-    return [];
-  }
+function takeHistory(userDir, kind = 'custom') {
+  const dir = path.join(userDir, kindInfo(kind).history);
+  return jsEntries(dir).map(name => ({ name, code: fs.readFileSync(path.join(dir, name), 'utf-8') }));
 }
 
 /**
  * Put a previously taken archive back.
  * @returns {number} how many entries were restored
  */
-function restoreHistory(userDir, entries) {
+function restoreHistory(userDir, entries, kind = 'custom') {
   if (!entries || entries.length === 0) return 0;
-  const dir = ensureDir(path.join(syncDir(userDir), 'history'));
+  const dir = ensureDir(path.join(userDir, kindInfo(kind).history));
   for (const entry of entries) {
     fs.writeFileSync(path.join(dir, entry.name), entry.code, 'utf-8');
   }
   return entries.length;
 }
 
-/** Write the Studio version next to custom.js so both are visible in the editor */
-function writeRemoteCopy(userDir, code) {
-  const target = path.join(userDir, 'custom.remote.js');
+/** Write the Studio version next to the local file so both are visible in the editor */
+function writeRemoteCopy(userDir, code, kind = 'custom') {
+  const target = path.join(userDir, kindInfo(kind).remote);
   fs.writeFileSync(target, String(code == null ? '' : code), 'utf-8');
   return target;
 }
 
-function removeRemoteCopy(userDir) {
+function removeRemoteCopy(userDir, kind = 'custom') {
   try {
-    fs.rmSync(path.join(userDir, 'custom.remote.js'), { force: true });
+    fs.rmSync(path.join(userDir, kindInfo(kind).remote), { force: true });
   } catch (_) { /* best effort */ }
 }
 
@@ -364,6 +394,8 @@ function relative(userDir, filePath) {
 
 module.exports = {
   SYNC_DIR,
+  KINDS,
+  kindInfo,
   normalize,
   hash,
   sameCode,

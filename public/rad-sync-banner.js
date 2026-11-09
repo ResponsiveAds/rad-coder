@@ -3,28 +3,38 @@
  *
  * Injected into the test page by the dev server (see sendTestHtml). Polls
  * /api/sync-status and shows a bar at the top of the page when the local
- * custom.js and the version in Studio have drifted apart — the browser is
+ * custom.js (or format.js) and the version in Studio have drifted apart — the browser is
  * where you are looking, so the warning has to be visible there too.
  */
 (function () {
   var POLL_MS = 5000;
+  // {file} becomes custom.js or format.js, {what} custom JS or format JS
   var STATES = {
     'remote-ahead': {
       background: '#b45309',
-      title: 'Studio has a newer custom JS than your local custom.js',
+      title: 'Studio has a newer {what} than your local {file}',
       hint: 'Someone edited this creative in Studio. Pull it from the rad-coder menu.'
     },
     'diverged': {
       background: '#b91c1c',
-      title: 'CONFLICT — your local custom.js and Studio both changed',
-      hint: 'Studio’s version is saved as custom.remote.js. Diff before pasting anything into Studio.'
+      title: 'CONFLICT — your local {file} and Studio both changed',
+      hint: 'Studio’s version is saved as {remote}. Diff before pasting anything into Studio.'
     },
     'unknown-divergence': {
       background: '#b91c1c',
-      title: 'Your local custom.js differs from Studio',
-      hint: 'No sync history for this folder, so neither side can be assumed newer. Diff custom.remote.js first.'
+      title: 'Your local {file} differs from Studio',
+      hint: 'No sync history for this folder, so neither side can be assumed newer. Diff {remote} first.'
     }
   };
+  var NAMES = {
+    custom: { file: 'custom.js', what: 'custom JS', remote: 'custom.remote.js' },
+    format: { file: 'format.js', what: 'format JS', remote: 'format.remote.js' }
+  };
+
+  function fill(text, kind) {
+    var n = NAMES[kind];
+    return text.replace('{file}', n.file).replace('{what}', n.what).replace('{remote}', n.remote);
+  }
 
   var bar = null;
 
@@ -33,9 +43,17 @@
     bar = null;
   }
 
+  // Problems to show: custom.js first, then format.js
+  function problems(status) {
+    var list = [];
+    if (STATES[status.state]) list.push({ kind: 'custom', status: status });
+    if (status.format && STATES[status.format.state]) list.push({ kind: 'format', status: status.format });
+    return list;
+  }
+
   function render(status) {
-    var spec = STATES[status.state];
-    if (!spec) {
+    var list = problems(status);
+    if (!list.length) {
       removeBar();
       return;
     }
@@ -56,17 +74,21 @@
       document.body.appendChild(bar);
     }
 
-    bar.style.background = spec.background;
+    bar.style.background = STATES[list[0].status.state].background;
     bar.innerHTML = '';
 
-    var title = document.createElement('strong');
-    title.textContent = '⚠ ' + spec.title;
-    bar.appendChild(title);
+    list.forEach(function (item, i) {
+      var spec = STATES[item.status.state];
+      var title = document.createElement('strong');
+      title.style.cssText = i ? 'display:block;margin-top:6px' : '';
+      title.textContent = '⚠ ' + fill(spec.title, item.kind);
+      bar.appendChild(title);
 
-    var hint = document.createElement('div');
-    hint.style.cssText = 'opacity:.9;margin-top:3px';
-    hint.textContent = spec.hint + (status.summary ? ' (' + status.summary + ')' : '');
-    bar.appendChild(hint);
+      var hint = document.createElement('div');
+      hint.style.cssText = 'opacity:.9;margin-top:3px';
+      hint.textContent = fill(spec.hint, item.kind) + (item.status.summary ? ' (' + item.status.summary + ')' : '');
+      bar.appendChild(hint);
+    });
   }
 
   var dismissed = false;
@@ -77,8 +99,9 @@
       .then(function (res) { return res.json(); })
       .then(function (status) {
         // A state change re-shows a banner the user dismissed earlier.
-        if (status.state !== lastState) {
-          lastState = status.state;
+        var state = status.state + '|' + (status.format ? status.format.state : '');
+        if (state !== lastState) {
+          lastState = state;
           dismissed = false;
         }
         if (dismissed) return;

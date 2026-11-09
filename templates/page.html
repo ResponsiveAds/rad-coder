@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Client page — example.com mimic</title>
+  <!--
+    Client test page: a copy of the publisher page the creative will run on, so the
+    format JS (format.js) and custom.js can be tested in the real placement.
+
+    Served by rad-coder at http://localhost:3000/pages/<this file>, with hot reload
+    on every save of custom.js, format.js or anything in pages/.
+
+    How to build one from the real page (record what you measured here):
+      - URL measured:            https://example.com/article?adkv_test=…
+      - date measured:           YYYY-MM-DD
+      - sticky / fixed elements: header 72px, position:fixed; …
+      - the ad slot:             copy its markup, ids and classes, and the CSS rules
+                                 that apply to it (DevTools → Elements → Styles)
+      - how the ad is served:    GPT friendly iframe | GAM SafeFrame | tag in page
+                                 (in DevTools, a SafeFrame's iframe src is on
+                                 *.safeframe.googlesyndication.com)
+    Keep the publisher's class names and nesting: format JS usually finds the slot
+    through them.
+
+    Query parameters: ?flowline=<id or part of name>  ?frame=friendly|safeframe|none
+                      ?noformat=1 (without format JS)  ?debug=0 (hide the panel)
+  -->
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body { font-family: Georgia, 'Times New Roman', serif; color: #111; background: #fff; }
+
+    /* --- publisher layout (replace with what you measured) --- */
+    .site-header { position: sticky; top: 0; z-index: 100; height: 64px; background: #111; color: #fff;
+                   display: flex; align-items: center; padding: 0 24px; font: 700 22px sans-serif; }
+    .article { max-width: 680px; margin: 0 auto; padding: 24px; font-size: 19px; line-height: 1.6; }
+    .article h1 { font-size: 40px; line-height: 1.15; }
+
+    /* --- the ad slot, with the publisher's own rules --- */
+    .ad-slot { display: flex; justify-content: center; background: #eee; padding: 16px 0; }
+    .ad-slot.is-empty { display: none; }
+  </style>
+</head>
+<body>
+  <header class="site-header">Example News</header>
+
+  <!-- The slot exactly as on the publisher page. The harness puts the ad server's
+       iframe (or the tag) inside it. -->
+  <div id="top-leaderboard" class="ad-slot is-empty" aria-label="Advertisement"></div>
+
+  <main class="article" id="article">
+    <h1>Article headline</h1>
+  </main>
+
+  <script>
+    // Filler so the page scrolls like the real one
+    var article = document.getElementById('article');
+    for (var i = 1; i <= 20; i++) {
+      article.insertAdjacentHTML('beforeend', '<p>§' + i + ' Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.</p>');
+    }
+
+    // What the publisher's script does once an ad rendered (GPT slotRenderEnded)
+    window.addEventListener('rad:slot-render-ended', function (e) {
+      e.detail.slot.classList.remove('is-empty');
+    });
+  </script>
+
+  <!-- The ad. data-frame: friendly (GPT friendly iframe) | safeframe (GAM SafeFrame) | none (tag in page) -->
+  <script src="/rad/harness.js"
+          data-slot="#top-leaderboard"
+          data-frame="friendly"
+          data-size="4x4"></script>
+</body>
+</html>

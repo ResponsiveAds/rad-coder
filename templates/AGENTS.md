@@ -1,17 +1,127 @@
 # RAD Agents Guide
 
-You are an agent writing only JS for a responsive creative. The creative was build using responsiveAds editor. ResponsiveSds is online editor which helps designers build creatives, but they have an option to add some customJS. You are responsible for writing this customJS.
+## What you are working with
 
-To do this you can only edit the `custom.js` file in this directory. When you edit and save this file the creative will be automatically loaded on the test page: http://localhost:3000/test.html. The code you wrote in `custom.js` will be applied to the creative.
+A **creative** is a responsive HTML5 ad built by a designer in the ResponsiveAds editor
+(Studio, studio.responsiveads.com). Designers can attach a **custom.js** snippet to a
+creative to add behaviour the editor can't express. Your job is to write that snippet — and,
+when the task is about how the ad behaves on a publisher's page, the **format JS**
+(`format.js`, see "Format JS and client test pages" below).
 
-Use the http://localhost:3000/test.html URL to open creative in the browser. Inspect the HTML dom so that you can use IDs from elements inside the custom.js code. Alo use the browser to test the code and make sure there are no console.log errors. 
+- Your code is injected as a string into the ad's config and runs **inside the ad's window**
+  (often an iframe). No module system: no `import`/`export`, no top-level `await`. Write one
+  plain script.
+- The same custom.js also runs **inside the editor** while the designer works. Everything
+  must sit behind the `inEditor` guard (see the boilerplate below), or it corrupts the
+  design session.
+- All elements are absolutely positioned with inline styles owned by the rendering library
+  ("Radical"). Work through the **Radical API**, don't invent your own DOM structure.
+- **rad-coder** is already running for this folder (`npx rad-coder`). It serves the test page
+  at http://localhost:3000/test.html and reloads it whenever `custom.js` or `format.js` is
+  saved. Client test pages live in `pages/` (http://localhost:3000/pages/<name>.html).
 
+Many people you work for are **not developers** (designers, ad-ops). They say "make the
+headline change after 3 seconds", never "mutate elementDefs in onBeforeRender". Do every
+technical step yourself, refer to elements by what they look like ("the red Shop Now
+button"), summarise changes in plain words, and never ask them to read code or use a
+terminal.
 
-Use modern JS standards and code practices.
+## Workflow
 
-We can use custom in situations when we want to add extra interactivity to our responsive creative. Use the Radical API to access elements added from the editor, update their behavior, and add custom functionalities to your ad.
+### 1. Check the dev server
 
-You can use all available JavaScript functions to manipulate element position and size. This is usually done by changing the DOM element CSS `style` property. All elements in creative are positioned absolutely with inline styles set by our rendering script.
+```bash
+curl -s http://localhost:3000/api/config
+```
+
+JSON → it's up; note `creativeId`, `flowlineName`, `allFlowlines`, `sizes`, `isFluid` and
+`format`. Connection refused → start it in the background from this folder
+(`npx rad-coder --no-editor`) and poll `/api/config` until it answers (up to ~30s).
+
+### 2. Discover the elements before writing code
+
+Element IDs are editor-generated (`a2`, `e7`, `text1`…); never guess them. Log the element
+blueprint from `onBeforeRender`, read the browser console, and map the person's words to IDs
+by text/image content. Temporarily make custom.js:
+
+```javascript
+var rad = Radical.getAdByWindow(window);
+if (!rad.getMergedContent().inEditor) {
+    rad.onBeforeRender(function (arg) {
+        Object.keys(arg.elementDefs).forEach(function (id) {
+            var d = arg.elementDefs[id];
+            console.log('[element]', id,
+                d.textboxWidget ? 'text: ' + JSON.stringify(d.textboxWidget.text)
+                : d.image ? 'image: ' + (d.image.src || '')
+                : Object.keys(d).join(','));
+        });
+    });
+}
+```
+
+Open the test page with your browser tool, read the console, and take a screenshot to see
+what each element looks like. No browser tool? Ask the person to describe the ad, or to
+open the test page and tell you what they see.
+
+### 3. Write the code
+
+Start from this boilerplate:
+
+```javascript
+//# sourceURL=RAD.js
+var rad = Radical.getAdByWindow(window);
+var container = rad.getContainer();
+
+if (!rad.getMergedContent().inEditor) {
+    rad.onLoad(onAdLoaded);
+    rad.onBeforeRender(onBeforeRender);
+    rad.onRender(onAdRender);
+}
+
+function onAdLoaded() { /* register event listeners here */ }
+function onBeforeRender(arg) { /* mutate arg.elementDefs here (DCO) */ }
+function onAdRender() { /* style/position tweaks, component refs here */ }
+```
+
+Pick the hook by the job — the wrong hook is the #1 source of bugs:
+
+| You want to… | Hook | Why |
+|---|---|---|
+| Swap text, image src or click-through URL from data (DCO) | `onBeforeRender(arg)` → mutate `arg.elementDefs` | runs before elements exist: no flicker |
+| Add click/hover/message/window listeners | `onLoad` | fires **once**; `onRender` refires on every resize → duplicate listeners |
+| Change styles, get element refs, start carousels/animations | `onRender` | elements only exist after render |
+| Pause media when the ad scrolls out of view | `container.onVisibilityChange(cb)` | performance and ad policy |
+
+- `rad.getElementById('id')` only inside (or after) `onRender`; `.domNode` is the DOM element,
+  component methods live on the object itself.
+- Change visibility/styles with `rad.updateElementStyles(el.domNode, {...})`, text with
+  `el.updateContent('…')` — textboxes need the shrink recalculation these do.
+- `onRender` refires on every resize: keep it idempotent.
+- Creatives render at several sizes: branch with `rad.getRenderedSize()` and check more than
+  one size (resize the window, or switch flowline).
+
+### 4. Verify — never declare done on unverified code
+
+After every meaningful change (the page reloads by itself):
+
+1. Console: zero errors.
+2. Screenshot: the visible result matches the request.
+3. Exercise it (click, wait for the timer, resize) and screenshot again.
+
+### 5. Hand off
+
+Remove debug `console.log`s, keep the `inEditor` guard, and tell the person in plain words
+what the code does. To go live, `custom.js` is pasted into Creative → Settings → Custom JS in
+Studio (and `format.js` into Format → Custom JS of its flowline). rad-coder only changes the
+local test page, never the live creative. Check the Studio sync section first.
+
+### More detail, when you need it
+
+| Read | When |
+|---|---|
+| `curl -s http://localhost:3000/rad/docs/dynamic-content.md` | DCO, ad-tag/URL parameters, fetching data, analytics events, cookies, parent-page access, visibility, screenshot mode |
+| `curl -s http://localhost:3000/rad/docs/troubleshooting.md` | something doesn't work: null elements, invisible text, duplicate handlers, no reload, format JS issues |
+| the "Radical API" and "All Functions" sections below | every `rad.*` function, carousels, textboxes |
 
 ---
 
@@ -61,6 +171,101 @@ curl -s http://localhost:3000/api/sync-status
 Never edit or delete anything in `.rad-coder/` — it is the only record of what Studio used
 to contain.
 
+
+---
+
+# Format JS and client test pages
+
+## Two kinds of code
+
+| File | Studio field | Runs | Use it for |
+|---|---|---|---|
+| `custom.js` | Creative → Settings → Custom JS | inside the creative's window | anything inside the ad: texts, clicks, carousels, DCO |
+| `format.js` | Format → Custom JS (one per flowline/format) | inside the creative's window **and** in the window that holds the ad tag | how the ad behaves on the publisher's page: sticky, fitting a slot, resizing the ad server's iframe |
+
+Write creative behaviour in `custom.js`. Touch `format.js` only when the task is about the
+placement on a publisher page, or the user asks for it.
+
+`format.js` exists when one of the creative's flowlines has format JS in Studio. It belongs
+to one flowline (see `format` in `.rad-coder.json` or `GET /api/config` → `format`) and to
+every flowline whose Studio format JS is identical. All other flowlines render with their
+own Studio format JS. To start format JS for a creative that has none, run
+`curl -s http://localhost:3000/rad/templates/format.js > format.js`. It then belongs to the
+flowline being tested.
+
+`format.js` has the same Studio sync guard as `custom.js`: `format.remote.js` appears on a
+conflict, and `GET /api/sync-status` → `format.state` reports where it stands. It is pasted
+into Studio by hand (Format → Custom JS of that flowline, and of each identical copy). If
+`GET /api/config` → `format.isCreativeSpecific` is `false`, the format is shared with other
+creatives: say so before the user pastes it.
+
+## How Radical delivers format JS (both copies run)
+
+1. As `flowlineCustomjs`, injected into the creative's window when the flowline is applied.
+   Radical **skips this** when `window.top` is cross-origin (GAM SafeFrame).
+2. Appended to the deployment script `d-<deployment>.js`, so it runs in the window that
+   holds the ad tag: the GPT iframe, the SafeFrame document, or the page itself. In a
+   SafeFrame this is the only copy.
+
+Both copies must find the creative through the Radical API (`Radical.getAdByWindow(window)`,
+`Radical.onAdCreated`, or the iframe next to `ins[id^="responsivead-"]`). The first copy
+to reach the creative marks its window (`adWindow.__radSomething = true`), so the work
+happens once. Skip the work when `getAdOptions().inEditor` or `.screenshot` is set. The
+template (`/rad/templates/format.js`) already does all of this.
+
+| Served in | Page reachable? | Notes |
+|---|---|---|
+| GPT friendly iframe (same origin) | yes: `adWindow.frameElement`, `window.top` | Radical reuses the publisher's iframe and loads the flowline CSS into the page |
+| GAM SafeFrame (cross-origin) | **no** | only `$sf.ext.geom()` / `expand()` and IntersectionObserver; Radical skips the flowline CSS and format JS step |
+| tag directly in the page | yes | |
+
+Useful ad options: `singleSize: {width, height}` makes Radical lay the creative out for a
+size other than the frame's, and `ad.forceRender()` re-renders it.
+
+## Client test pages (`pages/*.html`)
+
+A client test page is a copy of the publisher page where the ad will run: its layout, sticky
+or fixed elements, and the ad slot's exact markup and CSS. It is served at
+`http://localhost:3000/pages/<name>.html` and reloads on every save of `custom.js`,
+`format.js` or anything in `pages/`.
+
+- List them: `curl -s http://localhost:3000/api/pages`
+- Start a new one: `curl -s http://localhost:3000/rad/templates/page.html > pages/<client>.html`
+  (or `npx rad-coder --new-page=<client>`). The template explains what to measure on the
+  real page.
+- The ad goes in with one script tag per slot. Copy the publisher's slot markup, ids and
+  classes: format JS usually finds the slot through them.
+
+```html
+<script src="/rad/harness.js"
+        data-slot="#leaderboard"
+        data-frame="friendly"
+        data-size="4x4"
+        data-flowline="400H"
+        data-options='{"singleSize":{"width":600,"height":1200}}'
+        data-debug-events="rad-sticky-leaderboard"></script>
+```
+
+`data-slot` (required): the element the ad goes into. `data-frame`: `friendly` (GPT
+friendly iframe, default), `safeframe` (GAM SafeFrame) or `none` (tag directly in the page).
+`data-size`: the ad server's iframe size. `data-flowline`: flowline id or part of its name.
+`data-options`: merged into the Radical options. Optional: `data-frame-id` (copy the
+publisher's iframe id) and `data-sandbox="gpt"`.
+
+- Query parameters: `?flowline=…`, `?frame=friendly|safeframe|none`, `?noformat=1` (control
+  run without format JS), `?debug=0` (hide the panel).
+- `safeframe` loads the ad frame from `127.0.0.1` when the page is on `localhost` (and the
+  other way round), so the frame is really cross-origin, with a `$sf.ext` shim fed by the page.
+- The page gets a `rad:slot-render-ended` event (like GPT's slotRenderEnded) to do what the
+  publisher's script does, e.g. remove an `is-empty` class.
+- Format JS can report its state with a CustomEvent; list its name in `data-debug-events`
+  to see it in the debug panel.
+- Inspect from the browser tools: `window.__radHarness` holds slots, errors and events, and
+  `await __radHarness.evalInFrame('return …')` runs code inside the ad frame, even a
+  cross-origin SafeFrame.
+
+On `test.html` the format JS is applied too (and its deployment-script copy runs in the
+page). Open `test.html?noformat=1` to compare without it.
 
 ---
 
