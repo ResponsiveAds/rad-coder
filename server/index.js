@@ -410,37 +410,61 @@ app.get('/api/format-js', (req, res) => {
   res.json({ flowlineId, ...formatJsFor(flowlineId), format: formatInfo() });
 });
 
-// Loaded by test.html (injected into <head>): hands the format JS to Radical as
-// flowlineCustomjs and, like a live deployment script, runs a second copy in the
-// page once the Radical library has loaded.
+// Loaded by test.html (injected into <head>):
+//   - ?flowline=<id or part of the name> renders another format (flowline) of the
+//     creative, and a Format menu in the toolbar switches between them;
+//   - hands the format JS to Radical as flowlineCustomjs and, like a live
+//     deployment script, runs a second copy in the page once Radical has loaded.
+// Injected rather than built into test.html: every project keeps its own copy of
+// test.html, so changes there would never reach existing projects.
 app.get('/rad/test-format.js', (req, res) => {
   noStore(res);
   res.type('application/javascript');
   const codes = [];
   const byFlowline = {};
+  const flowlines = [];
   for (const fl of creativeConfig ? creativeConfig.allFlowlines : []) {
-    const { code } = formatJsFor(fl.id);
+    const { code, source } = formatJsFor(fl.id);
+    flowlines.push({ id: fl.id, name: fl.name, sizes: fl.sizes || [], isFluid: !!fl.isFluid, code: code ? source : null });
     if (!code) continue;
     let index = codes.indexOf(code);
     if (index === -1) { codes.push(code); index = codes.length - 1; }
     byFlowline[fl.id] = index;
   }
-  if (!codes.length) {
-    res.send('// rad-coder: no format JS for this creative\n');
-    return;
-  }
-  res.send(`${TEST_FORMAT_SOURCE}(${inlineJson({ codes, byFlowline })});\n//# sourceURL=rad-coder-test-format.js\n`);
+  const data = { codes, byFlowline, flowlines, defaultFlowline: creativeConfig ? creativeConfig.flowlineId : null };
+  res.send(`${TEST_FORMAT_SOURCE}(${inlineJson(data)});\n//# sourceURL=rad-coder-test-format.js\n`);
 });
 
 const TEST_FORMAT_SOURCE = `(function (data) {
-  if (/[?&]noformat=1(&|$)/.test(location.search)) {
-    console.info('[rad-coder] format JS disabled (?noformat=1)');
-    return;
+  var params = new URLSearchParams(location.search);
+  var noformat = params.get('noformat') === '1';
+  if (noformat) console.info('[rad-coder] format JS disabled (?noformat=1)');
+
+  // ?flowline=<id or part of the name>: render that format instead of the default
+  var wanted = params.get('flowline');
+  var chosen = null;
+  if (wanted) {
+    var q = wanted.toLowerCase();
+    chosen = data.flowlines.filter(function (f) { return f.id === wanted; })[0] ||
+      data.flowlines.filter(function (f) { return (f.name || '').toLowerCase().indexOf(q) !== -1; })[0] || null;
+    if (!chosen) console.warn('[rad-coder] ?flowline=' + wanted + ' matches no format of this creative');
   }
+  var shown = null;
+
   var pending = [];
   function patch(entry) {
     var opts = entry && entry[1];
     if (!opts || typeof opts !== 'object') return;
+    if (chosen && opts.flowline !== chosen.id) {
+      opts.flowline = chosen.id;
+      opts.sizes = chosen.sizes;
+      opts.isFluid = chosen.isFluid;
+    }
+    if (shown === null) {
+      shown = opts.flowline;
+      setTimeout(picker, 0);
+    }
+    if (noformat) return;
     var index = data.byFlowline[opts.flowline];
     if (index === undefined) return;
     var def = opts.config && opts.config._default;
@@ -471,6 +495,35 @@ const TEST_FORMAT_SOURCE = `(function (data) {
       document.head.appendChild(s);
     });
   }, true);
+
+  // The Format menu, in place of the flowline name in the toolbar
+  function picker() {
+    var slot = document.getElementById('flowline-name');
+    if (!slot || data.flowlines.length < 2 || slot.querySelector('select')) return;
+    var label = document.createElement('label');
+    label.style.cssText = 'display:inline-flex;align-items:center;gap:6px;cursor:pointer';
+    label.appendChild(document.createTextNode('Format'));
+    var select = document.createElement('select');
+    select.id = 'rad-format-picker';
+    select.style.cssText = 'max-width:340px;padding:2px 4px;border:1px solid #1f4b8a;border-radius:4px;background:#0f3460;color:#fff;font:inherit';
+    data.flowlines.forEach(function (f) {
+      var o = document.createElement('option');
+      o.value = f.id;
+      o.textContent = f.name + (f.code === 'local' ? '  · format.js' : f.code === 'studio' ? '  · format JS from Studio' : '');
+      o.selected = f.id === shown;
+      select.appendChild(o);
+    });
+    select.onchange = function () {
+      var p = new URLSearchParams(location.search);
+      if (select.value === data.defaultFlowline) p.delete('flowline');
+      else p.set('flowline', select.value);
+      var qs = p.toString();
+      location.assign(location.pathname + (qs ? '?' + qs : ''));
+    };
+    label.appendChild(select);
+    slot.textContent = '';
+    slot.appendChild(label);
+  }
 })`;
 
 // ------------------------------------------------------------

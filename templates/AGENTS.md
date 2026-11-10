@@ -19,6 +19,10 @@ when the task is about how the ad behaves on a publisher's page, the **format JS
 - **rad-coder** is already running for this folder (`npx rad-coder`). It serves the test page
   at http://localhost:3000/test.html and reloads it whenever `custom.js` or `format.js` is
   saved. Client test pages live in `pages/` (http://localhost:3000/pages/<name>.html).
+- A creative can come in several **formats** (Studio "flowlines", e.g. a right and a left
+  sidebar). The test page shows the default one. To see another, open
+  `test.html?flowline=<id>` (or part of its name), or use the **Format** menu in the test
+  page's toolbar. The ids are in `allFlowlines` of `curl -s http://localhost:3000/api/config`.
 
 Many people you work for are **not developers** (designers, ad-ops). They say "make the
 headline change after 3 seconds", never "mutate elementDefs in onBeforeRender". Do every
@@ -265,7 +269,9 @@ publisher's iframe id) and `data-sandbox="gpt"`.
   cross-origin SafeFrame.
 
 On `test.html` the format JS is applied too (and its deployment-script copy runs in the
-page). Open `test.html?noformat=1` to compare without it.
+page). Open `test.html?noformat=1` to compare without it. Each format gets its own format JS:
+`format.js` for the formats it belongs to, Studio's for the others. Check the formats of a
+change with `test.html?flowline=<id>`.
 
 ---
 

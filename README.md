@@ -192,6 +192,10 @@ When any flowline of the creative has format JS, rad-coder pulls it into **`form
   **and** as a second copy in the page once Radical has loaded (live, the format JS is appended
   to the deployment script `d-<id>.js`). Open `test.html?noformat=1` to compare without it.
   This is injected by the server, so projects with an older `test.html` get it too.
+- **Switch formats on the test page:** the toolbar has a **Format** menu when the creative has
+  more than one flowline, or open `test.html?flowline=<id or part of the name>`. Each format
+  renders with its own format JS (local `format.js` or Studio's), and hot reload keeps the
+  chosen format. `--flowline=` still picks the default one at start.
 - Same Studio sync guard as `custom.js`: base in `.rad-coder/format/base.js`, Studio history in
   `.rad-coder/format/history/`, `format.remote.js` on a conflict, warnings in the terminal and
   the browser, and menu items **Diff format.js vs Studio** / **Pull format.js from Studio**.
