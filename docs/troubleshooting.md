@@ -89,6 +89,15 @@ switch the DevTools frame context to the ad iframe first.
 - In a SafeFrame (`?frame=safeframe` on a client page) only the copy in the tag's window
   runs, and the publisher page cannot be touched.
 
+## Testing a format at other widths, or on the real page
+
+- Browser tools often cannot resize the window. Load the client test page inside iframes
+  of set widths instead (same origin, so they can be inspected):
+  `var f = document.createElement('iframe'); f.style.cssText = 'width:900px;height:700px'; f.src = '/pages/<name>.html'; document.body.appendChild(f);`
+- A live publisher page cannot fetch from `localhost`. To try `format.js` there, paste its
+  code into the ad frame as an inline `<script>` element (it changes only your own tab),
+  and add the rules of `format.css` to the page in a `<style>` element.
+
 ## Format CSS has no effect
 
 - Check which CSS the flowline gets: `curl -s "http://localhost:3000/api/format-css?flowline=<id>"`

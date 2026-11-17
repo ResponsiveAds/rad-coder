@@ -196,6 +196,11 @@ to contain.
 Write creative behaviour in `custom.js`. Touch `format.js` and `format.css` only when the
 task is about the placement on a publisher page, or the user asks for it.
 
+**Format code never changes the creative's content.** It places, sizes and pins the ad, and
+makes room for it on the page. A wrong text, image or layout inside the ad is fixed by the
+designer in the Studio editor: report it to the user, do not patch it from `format.js` or
+`format.css`.
+
 `format.js` exists when one of the creative's flowlines has format JS in Studio. It belongs
 to one flowline (see `format` in `.rad-coder.json` or `GET /api/config` → `format`) and to
 every flowline whose Studio format JS is identical. All other flowlines render with their
@@ -258,6 +263,25 @@ template (`/rad/templates/format.js`) already does all of this.
 
 Useful ad options: `singleSize: {width, height}` makes Radical lay the creative out for a
 size other than the frame's, and `ad.forceRender()` re-renders it.
+
+## Formats with states (closed / open, drawer / adhesion)
+
+- **One tag can show every layout.** The live tag's config has all of the creative's
+  layouts, whichever flowline it was trafficked with (`ad.getActiveConfig().mediaqueries`).
+  `ad.setSizeFilter([{ width, height }])` followed by `ad.forceRender()` renders one of
+  them, so a format can change state without a retag. Read the sizes from the config and
+  check that a layout exists before switching to it.
+- **Take over the built-in open/close buttons.** Radical's own click actions (`sidekick`,
+  `expandv`) choose a layout and position the frame themselves. A format that manages its
+  own states catches those clicks first: a `click` listener on the ad window in the capture
+  phase, with `stopImmediatePropagation()`. Find the buttons from the config (elements
+  whose `onClick` has such an action), never by hard-coded element ids.
+- **Clean up when the slot refreshes.** Ad servers replace the frame after a while. Undo
+  everything the format changed on the page (classes, inline styles, listeners) on the ad
+  window's `pagehide`, and when the frame is no longer in the document. Run one instance
+  per page: mark the page window as well as the ad window.
+- **Keep `format.js` and `format.css` in step.** When the sizes are in the CSS and the
+  layout names in the JS, put a comment in each file that points at the other.
 
 ## Client test pages (`pages/*.html`)
 
