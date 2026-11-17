@@ -1,6 +1,6 @@
 /**
  * Hot reload for client test pages (pages/*.html). Injected by the dev server.
- * Reloads the page when custom.js, format.js or anything in pages/ is saved.
+ * Reloads the page when custom.js, format.js, format.css or anything in pages/ is saved.
  */
 (function () {
   if (window.__radLive) return;

@@ -5,7 +5,8 @@
  * the globals the preview page embeds:
  *   window.creative   the creative; config.customjs is the creative Custom JS
  *   window.flowlines  the creative's flowlines ("formats" in the Studio UI); each
- *                     flowline.customJS is that format's Custom JS ("format JS")
+ *                     flowline.customJS is that format's Custom JS ("format JS") and
+ *                     flowline.customCSS its Custom CSS ("format CSS")
  *
  * Pure functions only (no side effects on require), so both the CLI and the dev
  * server can use them — and they can be tested against a saved preview page.
@@ -103,6 +104,21 @@ function formatsFromFlowlines(flowlines) {
   return formats;
 }
 
+/**
+ * Format CSS per flowline: { [flowlineId]: string|null } (flowline.customCSS).
+ * Studio appends it, as written, to the format's published stylesheet
+ * rad-fl-<flowlineId>.css, which Radical loads into the publisher's page.
+ */
+function formatCssFromFlowlines(flowlines) {
+  const css = {};
+  for (const fl of flowlines || []) {
+    const id = fl._id || fl.id;
+    const code = fl.flowline && typeof fl.flowline.customCSS === 'string' ? fl.flowline.customCSS : '';
+    css[id] = code.trim() ? code : null;
+  }
+  return css;
+}
+
 /** Everything rad-coder reads from the preview page */
 function parsePreview(html, creativeId) {
   const idMatch = html.match(/window\.creativeId\s*=\s*['"]([^'"]+)['"]/);
@@ -112,12 +128,13 @@ function parsePreview(html, creativeId) {
     customjs: extractCustomJs(html),
     flowlines,
     formats: formatsFromFlowlines(flowlines),
+    formatCss: formatCssFromFlowlines(flowlines),
   };
 }
 
 /**
  * Re-read the code that can change in Studio while we work: the creative Custom
- * JS and every flowline's format JS. Never throws — it runs on a timer, and a
+ * JS and every flowline's format JS and format CSS. Never throws — it runs on a timer, and a
  * network blip must not kill a working session.
  *
  * Dev/testing seams, because there is no way to write to Studio:
@@ -125,26 +142,43 @@ function parsePreview(html, creativeId) {
  *   RAD_CODER_FAKE_REMOTE_FORMAT  file to read as "Studio's" format JS (applied to
  *                                 the flowlines that have format JS, or to the
  *                                 selected one if none do)
+ *   RAD_CODER_FAKE_REMOTE_FORMAT_CSS  the same, for "Studio's" format CSS
  *
- * @returns {Promise<{ok: boolean, customjs: ?string, formats: ?Object, error: ?string}>}
+ * @returns {Promise<{ok: boolean, customjs: ?string, formats: ?Object, formatCss: ?Object, error: ?string}>}
  */
 async function fetchStudioCode(creativeId) {
   let customjs = null;
   let formats = null;
+  let formatCss = null;
   try {
     const response = await fetch(previewUrlFor(creativeId), { cache: 'no-store' });
     if (!response.ok) {
-      return { ok: false, customjs: null, formats: null, error: `HTTP ${response.status}: ${response.statusText}` };
+      return failed(`HTTP ${response.status}: ${response.statusText}`);
     }
     const parsed = parsePreview(await response.text(), creativeId);
     customjs = parsed.customjs;
     formats = parsed.flowlines ? parsed.formats : null;
+    formatCss = parsed.flowlines ? parsed.formatCss : null;
   } catch (err) {
-    if (!process.env.RAD_CODER_FAKE_REMOTE_JS && !process.env.RAD_CODER_FAKE_REMOTE_FORMAT) {
-      return { ok: false, customjs: null, formats: null, error: err.message };
-    }
+    const faked = process.env.RAD_CODER_FAKE_REMOTE_JS || process.env.RAD_CODER_FAKE_REMOTE_FORMAT
+      || process.env.RAD_CODER_FAKE_REMOTE_FORMAT_CSS;
+    if (!faked) return failed(err.message);
   }
-  return applyFakes({ ok: true, customjs, formats, error: null });
+  return applyFakes({ ok: true, customjs, formats, formatCss, error: null });
+}
+
+function failed(error) {
+  return { ok: false, customjs: null, formats: null, formatCss: null, error };
+}
+
+/** Replace a per-flowline map's entries with the contents of a fake file */
+function fakePerFlowline(map, file) {
+  const code = fs.readFileSync(file, 'utf-8');
+  const out = { ...(map || {}) };
+  const withCode = Object.keys(out).filter((id) => out[id]);
+  const targets = withCode.length ? withCode : (process.env.RAD_CODER_FAKE_FORMAT_FLOWLINES || '').split(',').filter(Boolean);
+  for (const id of targets) out[id] = code.trim() ? code : null;
+  return out;
 }
 
 function applyFakes(result) {
@@ -153,22 +187,24 @@ function applyFakes(result) {
     try {
       result.customjs = fs.readFileSync(fakeJs, 'utf-8');
     } catch (err) {
-      return { ok: false, customjs: null, formats: null, error: `fake remote unreadable: ${err.message}` };
+      return failed(`fake remote unreadable: ${err.message}`);
     }
   }
   const fakeFormat = process.env.RAD_CODER_FAKE_REMOTE_FORMAT;
   if (fakeFormat) {
-    let code;
     try {
-      code = fs.readFileSync(fakeFormat, 'utf-8');
+      result.formats = fakePerFlowline(result.formats, fakeFormat);
     } catch (err) {
-      return { ok: false, customjs: null, formats: null, error: `fake format unreadable: ${err.message}` };
+      return failed(`fake format unreadable: ${err.message}`);
     }
-    const formats = { ...(result.formats || {}) };
-    const withCode = Object.keys(formats).filter((id) => formats[id]);
-    const targets = withCode.length ? withCode : (process.env.RAD_CODER_FAKE_FORMAT_FLOWLINES || '').split(',').filter(Boolean);
-    for (const id of targets) formats[id] = code.trim() ? code : null;
-    result.formats = formats;
+  }
+  const fakeCss = process.env.RAD_CODER_FAKE_REMOTE_FORMAT_CSS;
+  if (fakeCss) {
+    try {
+      result.formatCss = fakePerFlowline(result.formatCss, fakeCss);
+    } catch (err) {
+      return failed(`fake format CSS unreadable: ${err.message}`);
+    }
   }
   return result;
 }
@@ -179,6 +215,7 @@ module.exports = {
   extractCustomJs,
   extractFlowlines,
   formatsFromFlowlines,
+  formatCssFromFlowlines,
   parsePreview,
   fetchStudioCode,
   applyFakes,

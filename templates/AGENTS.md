@@ -5,8 +5,9 @@
 A **creative** is a responsive HTML5 ad built by a designer in the ResponsiveAds editor
 (Studio, studio.responsiveads.com). Designers can attach a **custom.js** snippet to a
 creative to add behaviour the editor can't express. Your job is to write that snippet — and,
-when the task is about how the ad behaves on a publisher's page, the **format JS**
-(`format.js`, see "Format JS and client test pages" below).
+when the task is about how the ad behaves on a publisher's page, the **format JS** and
+**format CSS** (`format.js`, `format.css`, see "Format JS, format CSS and client test pages"
+below).
 
 - Your code is injected as a string into the ad's config and runs **inside the ad's window**
   (often an iframe). No module system: no `import`/`export`, no top-level `await`. Write one
@@ -17,8 +18,8 @@ when the task is about how the ad behaves on a publisher's page, the **format JS
 - All elements are absolutely positioned with inline styles owned by the rendering library
   ("Radical"). Work through the **Radical API**, don't invent your own DOM structure.
 - **rad-coder** is already running for this folder (`npx rad-coder`). It serves the test page
-  at http://localhost:3000/test.html and reloads it whenever `custom.js` or `format.js` is
-  saved. Client test pages live in `pages/` (http://localhost:3000/pages/<name>.html).
+  at http://localhost:3000/test.html and reloads it whenever `custom.js`, `format.js` or
+  `format.css` is saved. Client test pages live in `pages/` (http://localhost:3000/pages/<name>.html).
 - A creative can come in several **formats** (Studio "flowlines", e.g. a right and a left
   sidebar). The test page shows the default one. To see another, open
   `test.html?flowline=<id>` (or part of its name), or use the **Format** menu in the test
@@ -116,8 +117,8 @@ After every meaningful change (the page reloads by itself):
 
 Remove debug `console.log`s, keep the `inEditor` guard, and tell the person in plain words
 what the code does. To go live, `custom.js` is pasted into Creative → Settings → Custom JS in
-Studio (and `format.js` into Format → Custom JS of its flowline). rad-coder only changes the
-local test page, never the live creative. Check the Studio sync section first.
+Studio (and `format.js` / `format.css` into Format → Custom JS / Custom CSS of their
+flowline). rad-coder only changes the local test page, never the live creative. Check the Studio sync section first.
 
 ### More detail, when you need it
 
@@ -164,6 +165,9 @@ curl -s http://localhost:3000/api/sync-status
 4. Tell the user what you merged and that the merged `custom.js` is what should be pasted
    into Studio.
 
+`format.js` and `format.css` are guarded the same way, with `format.remote.js` and
+`format.remote.css`.
+
 ## Recovering an older Studio version
 
 `.rad-coder/` keeps history so nothing is lost:
@@ -171,6 +175,7 @@ curl -s http://localhost:3000/api/sync-status
 - `.rad-coder/history/<timestamp>.js` — every distinct version ever seen in Studio
 - `.rad-coder/backups/custom-<timestamp>.js` — your local file before rad-coder overwrote it
 - `.rad-coder/base.js` — the version the two sides last agreed on
+- `.rad-coder/format/` and `.rad-coder/format-css/` — the same for `format.js` and `format.css`
 
 Never edit or delete anything in `.rad-coder/` — it is the only record of what Studio used
 to contain.
@@ -178,17 +183,18 @@ to contain.
 
 ---
 
-# Format JS and client test pages
+# Format JS, format CSS and client test pages
 
-## Two kinds of code
+## Three kinds of code
 
 | File | Studio field | Runs | Use it for |
 |---|---|---|---|
 | `custom.js` | Creative → Settings → Custom JS | inside the creative's window | anything inside the ad: texts, clicks, carousels, DCO |
 | `format.js` | Format → Custom JS (one per flowline/format) | inside the creative's window **and** in the window that holds the ad tag | how the ad behaves on the publisher's page: sticky, fitting a slot, resizing the ad server's iframe |
+| `format.css` | Format → Custom CSS (one per flowline/format) | in the page that holds the ad (not in a SafeFrame) | the styles of that placement: pinning the ad's container, collapsing the slot, making room on the page |
 
-Write creative behaviour in `custom.js`. Touch `format.js` only when the task is about the
-placement on a publisher page, or the user asks for it.
+Write creative behaviour in `custom.js`. Touch `format.js` and `format.css` only when the
+task is about the placement on a publisher page, or the user asks for it.
 
 `format.js` exists when one of the creative's flowlines has format JS in Studio. It belongs
 to one flowline (see `format` in `.rad-coder.json` or `GET /api/config` → `format`) and to
@@ -202,6 +208,33 @@ conflict, and `GET /api/sync-status` → `format.state` reports where it stands.
 into Studio by hand (Format → Custom JS of that flowline, and of each identical copy). If
 `GET /api/config` → `format.isCreativeSpecific` is `false`, the format is shared with other
 creatives: say so before the user pastes it.
+
+## Format CSS (`format.css`)
+
+Keep the placement's styles in `format.css` and let `format.js` only add and remove classes
+(on the page's `<html>`, the slot, Radical's iframe container). Inline styles and stylesheets
+injected from JS are for what CSS cannot reach, e.g. an element inside a shadow root.
+
+- Studio appends the format's Custom CSS, **as written**, to the format's published
+  stylesheet `rad-fl-<flowlineId>.css`. Radical loads that stylesheet into the page that
+  holds the ad. The selectors are not prefixed, so a rule can target anything on the page:
+  `html.my-state`, the publisher's slot, the nav.
+- That stylesheet also has generated rules on Radical's container, most with `!important`:
+  `.rad-fl-<flowlineId> { position: static !important; z-index: 999 !important; … }` and
+  `.rad-fl-<flowlineId> iframe { max-width: …px !important; }`. To override one, use
+  `!important` **and** a more specific selector (`html.my-state .my-container`).
+  See them: `curl -s http://localhost:3000/rad/flowlines/<flowlineId>/rad-fl-<flowlineId>.css`
+- In a GAM SafeFrame the stylesheet is not loaded at all: nothing in `format.css` applies there.
+- `format.css` belongs to the same flowline as `format.js`, and to every flowline whose
+  Studio format CSS is identical (`GET /api/config` → `format.css.appliesTo`). To start one:
+  `curl -s http://localhost:3000/rad/templates/format.css > format.css`.
+- On the test pages the dev server serves that stylesheet itself, with `format.css` in place
+  of Studio's Custom CSS. `curl -s "http://localhost:3000/api/format-css?flowline=<id>"`
+  says which CSS a flowline gets (`source`: `local`, `studio` or `none`).
+- Same Studio sync guard: `format.remote.css` on a conflict, `GET /api/sync-status` →
+  `formatCss.state`. Studio turns double quotes in the CSS into single quotes; rad-coder
+  ignores that difference. To go live, `format.css` is pasted into Format → Custom CSS of
+  that flowline (and of each identical copy), together with `format.js`.
 
 ## How Radical delivers format JS (both copies run)
 
@@ -231,7 +264,7 @@ size other than the frame's, and `ad.forceRender()` re-renders it.
 A client test page is a copy of the publisher page where the ad will run: its layout, sticky
 or fixed elements, and the ad slot's exact markup and CSS. It is served at
 `http://localhost:3000/pages/<name>.html` and reloads on every save of `custom.js`,
-`format.js` or anything in `pages/`.
+`format.js`, `format.css` or anything in `pages/`.
 
 - List them: `curl -s http://localhost:3000/api/pages`
 - Start a new one: `curl -s http://localhost:3000/rad/templates/page.html > pages/<client>.html`
@@ -257,7 +290,9 @@ friendly iframe, default), `safeframe` (GAM SafeFrame) or `none` (tag directly i
 publisher's iframe id) and `data-sandbox="gpt"`.
 
 - Query parameters: `?flowline=…`, `?frame=friendly|safeframe|none`, `?noformat=1` (control
-  run without format JS), `?debug=0` (hide the panel).
+  run without format JS and format CSS), `?debug=0` (hide the panel).
+- Do not link `format.css` from the page: it arrives with the format's stylesheet, as it
+  does live.
 - `safeframe` loads the ad frame from `127.0.0.1` when the page is on `localhost` (and the
   other way round), so the frame is really cross-origin, with a `$sf.ext` shim fed by the page.
 - The page gets a `rad:slot-render-ended` event (like GPT's slotRenderEnded) to do what the
@@ -268,10 +303,11 @@ publisher's iframe id) and `data-sandbox="gpt"`.
   `await __radHarness.evalInFrame('return …')` runs code inside the ad frame, even a
   cross-origin SafeFrame.
 
-On `test.html` the format JS is applied too (and its deployment-script copy runs in the
-page). Open `test.html?noformat=1` to compare without it. Each format gets its own format JS:
-`format.js` for the formats it belongs to, Studio's for the others. Check the formats of a
-change with `test.html?flowline=<id>`.
+On `test.html` the format JS and format CSS are applied too (and the format JS's
+deployment-script copy runs in the page). Open `test.html?noformat=1` to compare without
+them. Each format gets its own format JS and CSS: `format.js` / `format.css` for the formats
+they belong to, Studio's for the others. Check the formats of a change with
+`test.html?flowline=<id>`.
 
 ---
 

@@ -11,6 +11,7 @@ const { ansi } = require('./tui');
 const sync = require('./sync');
 const studio = require('./studio');
 const formats = require('./formats');
+const flowlineCss = require('./flowline-css');
 
 // ============================================================
 // TUI Instance & Logging
@@ -124,7 +125,9 @@ async function fetchCreativeConfig(creativeId) {
     }
 
     const parsed = studio.parsePreview(await response.text(), creativeId);
-    const studioCode = studio.applyFakes({ ok: true, customjs: parsed.customjs, formats: parsed.formats, error: null });
+    const studioCode = studio.applyFakes({
+      ok: true, customjs: parsed.customjs, formats: parsed.formats, formatCss: parsed.formatCss, error: null
+    });
     if (!studioCode.ok) throw new Error(studioCode.error);
 
     const flowlines = parsed.flowlines;
@@ -161,13 +164,16 @@ async function fetchCreativeConfig(creativeId) {
         sizes: sizesOf(f),
         isFluid: f.fullyFluid,
         isCreativeSpecific: f.isCreativeSpecific !== false,
-        hasFormatJs: !!studioCode.formats[f._id || f.id]
+        hasFormatJs: !!studioCode.formats[f._id || f.id],
+        hasFormatCss: !!(studioCode.formatCss || {})[f._id || f.id]
       })),
       // Custom JS from the creative (if available)
       customjs: studioCode.customjs,
       // Format JS per flowline, as in Studio — never sent to the browser as-is
       formats: studioCode.formats,
-      // Which flowlines the local format.js belongs to (set by the CLI)
+      // Format CSS per flowline, as in Studio
+      formatCss: studioCode.formatCss || {},
+      // Which flowlines the local format.js / format.css belong to (set by the CLI)
       format: null
     };
 
@@ -254,6 +260,7 @@ app.use(cors());
 
 const customJsPath = path.join(userDir, 'custom.js');
 const formatJsPath = path.join(userDir, 'format.js');
+const formatCssPath = path.join(userDir, 'format.css');
 const pagesDir = path.join(userDir, 'pages');
 
 function noStore(res) {
@@ -321,10 +328,10 @@ app.get('/test.html', (req, res) => {
 });
 
 // ------------------------------------------------------------
-// Format JS
+// Format JS and format CSS
 // ------------------------------------------------------------
 
-/** Public description of what format.js is and where it applies */
+/** Public description of what format.js / format.css are and where they apply */
 function formatInfo() {
   const fmt = creativeConfig && creativeConfig.format;
   const ids = creativeConfig ? creativeConfig.allFlowlines.map(f => f.id) : [];
@@ -345,6 +352,12 @@ function formatInfo() {
     others: groups
       .filter(g => !(fmt && g.some(id => fmt.appliesTo.includes(id))))
       .map(g => ({ flowlineIds: g, names: g.map(nameOf) })),
+    // format.css: the format's Custom CSS, for the same flowline
+    css: {
+      file: 'format.css',
+      hasLocal: fs.existsSync(formatCssPath),
+      appliesTo: fmt ? fmt.cssAppliesTo || [] : [],
+    },
   };
 }
 
@@ -363,26 +376,47 @@ function formatJsFor(flowlineId) {
   return { code: '', source: 'none', file: null };
 }
 
-/** Recompute which flowlines share the owner's format JS (after a Studio change) */
-function refreshFormatGroup() {
+/**
+ * The format CSS a flowline renders with: the local format.css for the flowlines it
+ * belongs to, Studio's format CSS for every other flowline.
+ */
+function formatCssFor(flowlineId) {
   const fmt = creativeConfig && creativeConfig.format;
+  if (fmt && (fmt.cssAppliesTo || []).includes(flowlineId)) {
+    const local = sync.readLocal(userDir, 'formatCss');
+    if (local !== null) return { code: local, source: 'local', file: 'format.css' };
+  }
+  const studioCode = studioState.formatCssByFlowline[flowlineId];
+  if (studioCode) return { code: studioCode, source: 'studio', file: null };
+  return { code: '', source: 'none', file: null };
+}
+
+/** Recompute which flowlines share the owner's format JS / CSS (after a Studio change) */
+function refreshFormatGroup() {
+  if (!creativeConfig) return;
+  const fmt = creativeConfig.format;
+  creativeConfig.allFlowlines.forEach((f) => {
+    f.hasFormatJs = !!studioState.formats[f.id];
+    f.hasFormatCss = !!studioState.formatCssByFlowline[f.id];
+  });
   if (!fmt) return;
   const ids = creativeConfig.allFlowlines.map(f => f.id);
   fmt.appliesTo = formats.appliesTo(fmt.flowlineId, ids, studioState.formats);
-  creativeConfig.allFlowlines.forEach((f) => { f.hasFormatJs = !!studioState.formats[f.id]; });
+  fmt.cssAppliesTo = formats.appliesTo(fmt.flowlineId, ids, studioState.formatCssByFlowline, 'formatCss');
 }
 
-/** format.js appeared and belongs to no flowline yet: it belongs to the one being tested */
-function claimFormatOwner() {
+/** format.js or format.css appeared and belongs to no flowline yet: it belongs to the one being tested */
+function claimFormatOwner(file) {
   const fl = creativeConfig.allFlowlines.find(f => f.id === creativeConfig.flowlineId) || creativeConfig.allFlowlines[0];
   creativeConfig.format = {
     flowlineId: fl.id,
     flowlineName: fl.name,
     appliesTo: [fl.id],
+    cssAppliesTo: [fl.id],
     isCreativeSpecific: fl.isCreativeSpecific !== false,
   };
   updateProjectConfig({ format: { ...creativeConfig.format } });
-  log(` format.js is the format JS of flowline "${fl.name}"`);
+  log(` ${file} is the ${file === 'format.css' ? 'format CSS' : 'format JS'} of flowline "${fl.name}"`);
 }
 
 /** Merge a patch into .rad-coder.json (best effort) */
@@ -410,11 +444,76 @@ app.get('/api/format-js', (req, res) => {
   res.json({ flowlineId, ...formatJsFor(flowlineId), format: formatInfo() });
 });
 
+app.get('/api/format-css', (req, res) => {
+  noStore(res);
+  if (!creativeConfig) {
+    res.status(503).json({ error: 'Config not yet loaded' });
+    return;
+  }
+  const flowlineId = typeof req.query.flowline === 'string' && req.query.flowline
+    ? req.query.flowline
+    : creativeConfig.flowlineId;
+  res.json({ flowlineId, ...formatCssFor(flowlineId), format: formatInfo() });
+});
+
+// The flowline stylesheets, in place of publish.responsiveads.com/flowlines/. The
+// test pages point Radical's flSource here, so a flowline that uses format.css gets
+// the published stylesheet with Studio's Custom CSS swapped for the local file
+// (see server/flowline-css.js). /rad/flowlines-plain/ leaves the format CSS out
+// altogether (?noformat=1). Everything else is passed on to the published files.
+const FLOWLINE_SOURCE = 'https://s3-eu-west-1.amazonaws.com/publish.responsiveads.com/flowlines/';
+const PUBLISHED_CSS_TTL = 5 * 60 * 1000;
+const publishedCss = new Map(); // url → { text, at }
+
+async function fetchPublishedCss(url) {
+  const cached = publishedCss.get(url);
+  if (cached && Date.now() - cached.at < PUBLISHED_CSS_TTL) return cached.text;
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const text = await response.text();
+    publishedCss.set(url, { text, at: Date.now() });
+    return text;
+  } catch (err) {
+    if (cached) return cached.text; // offline: the last copy is better than none
+    log(` ${ansi.dim}Could not fetch ${url}: ${err.message}${ansi.reset}`);
+    return null;
+  }
+}
+
+app.get(/^\/rad\/flowlines(-plain)?\/([\w./-]+)$/, async (req, res) => {
+  const plain = !!req.params[0];
+  const rest = req.params[1];
+  if (rest.includes('..')) {
+    res.status(400).send('Bad path');
+    return;
+  }
+  const sheet = rest.match(/^([a-f0-9]+)\/rad-fl-\1\.css$/i);
+  if (!sheet || !creativeConfig) {
+    res.redirect(302, FLOWLINE_SOURCE + rest);
+    return;
+  }
+  const flowlineId = sheet[1];
+  const css = formatCssFor(flowlineId);
+  const published = await fetchPublishedCss(FLOWLINE_SOURCE + rest);
+  noStore(res);
+  res.type('text/css; charset=utf-8');
+  res.send(flowlineCss.compose({
+    published,
+    flowlineId,
+    studioCss: studioState.formatCssByFlowline[flowlineId] || null,
+    localCss: css.source === 'local' ? css.code : null,
+    plain,
+  }));
+});
+
 // Loaded by test.html (injected into <head>):
 //   - ?flowline=<id or part of the name> renders another format (flowline) of the
 //     creative, and a Format menu in the toolbar switches between them;
 //   - hands the format JS to Radical as flowlineCustomjs and, like a live
-//     deployment script, runs a second copy in the page once Radical has loaded.
+//     deployment script, runs a second copy in the page once Radical has loaded;
+//   - points Radical's flSource at /rad/flowlines/, so the format's stylesheet
+//     comes with the local format.css.
 // Injected rather than built into test.html: every project keeps its own copy of
 // test.html, so changes there would never reach existing projects.
 app.get('/rad/test-format.js', (req, res) => {
@@ -425,7 +524,11 @@ app.get('/rad/test-format.js', (req, res) => {
   const flowlines = [];
   for (const fl of creativeConfig ? creativeConfig.allFlowlines : []) {
     const { code, source } = formatJsFor(fl.id);
-    flowlines.push({ id: fl.id, name: fl.name, sizes: fl.sizes || [], isFluid: !!fl.isFluid, code: code ? source : null });
+    const css = formatCssFor(fl.id);
+    flowlines.push({
+      id: fl.id, name: fl.name, sizes: fl.sizes || [], isFluid: !!fl.isFluid,
+      code: code ? source : null, css: css.code ? css.source : null
+    });
     if (!code) continue;
     let index = codes.indexOf(code);
     if (index === -1) { codes.push(code); index = codes.length - 1; }
@@ -438,7 +541,7 @@ app.get('/rad/test-format.js', (req, res) => {
 const TEST_FORMAT_SOURCE = `(function (data) {
   var params = new URLSearchParams(location.search);
   var noformat = params.get('noformat') === '1';
-  if (noformat) console.info('[rad-coder] format JS disabled (?noformat=1)');
+  if (noformat) console.info('[rad-coder] format JS and format CSS disabled (?noformat=1)');
 
   // ?flowline=<id or part of the name>: render that format instead of the default
   var wanted = params.get('flowline');
@@ -464,6 +567,8 @@ const TEST_FORMAT_SOURCE = `(function (data) {
       shown = opts.flowline;
       setTimeout(picker, 0);
     }
+    // The format's stylesheet comes from the dev server, with the local format.css
+    opts.flSource = location.origin + (noformat ? '/rad/flowlines-plain/' : '/rad/flowlines/');
     if (noformat) return;
     var index = data.byFlowline[opts.flowline];
     if (index === undefined) return;
@@ -509,7 +614,12 @@ const TEST_FORMAT_SOURCE = `(function (data) {
     data.flowlines.forEach(function (f) {
       var o = document.createElement('option');
       o.value = f.id;
-      o.textContent = f.name + (f.code === 'local' ? '  · format.js' : f.code === 'studio' ? '  · format JS from Studio' : '');
+      var notes = [];
+      if (f.code === 'local') notes.push('format.js');
+      if (f.css === 'local') notes.push('format.css');
+      if (f.code === 'studio') notes.push('format JS from Studio');
+      if (f.css === 'studio') notes.push('format CSS from Studio');
+      o.textContent = f.name + (notes.length ? '  · ' + notes.join(' + ') : '');
       o.selected = f.id === shown;
       select.appendChild(o);
     });
@@ -579,7 +689,7 @@ app.use('/pages', express.static(pagesDir, {
 
 // Starting points for agents and people: curl them into the project folder
 app.get('/rad/templates/:name', (req, res) => {
-  const allowed = { 'page.html': 'page.html', 'format.js': 'format.js' };
+  const allowed = { 'page.html': 'page.html', 'format.js': 'format.js', 'format.css': 'format.css' };
   const name = allowed[req.params.name];
   if (!name) {
     res.status(404).send('Unknown template');
@@ -633,16 +743,16 @@ function syncStatusJson(kind) {
   };
 }
 
-// Report how the local custom.js (top level) and format.js (`format`) compare to
-// the versions currently in Studio
+// Report how the local custom.js (top level), format.js (`format`) and format.css
+// (`formatCss`) compare to the versions currently in Studio
 app.get('/api/sync-status', (req, res) => {
   noStore(res);
   const fmt = creativeConfig && creativeConfig.format;
+  const owner = { flowlineId: fmt ? fmt.flowlineId : null, flowlineName: fmt ? fmt.flowlineName : null };
   res.json({
     ...syncStatusJson('custom'),
-    format: fmt || fs.existsSync(formatJsPath)
-      ? { ...syncStatusJson('format'), flowlineId: fmt ? fmt.flowlineId : null, flowlineName: fmt ? fmt.flowlineName : null }
-      : null,
+    format: fmt || fs.existsSync(formatJsPath) ? { ...syncStatusJson('format'), ...owner } : null,
+    formatCss: hasFormatCss() ? { ...syncStatusJson('formatCss'), ...owner } : null,
   });
 });
 
@@ -653,7 +763,7 @@ app.get('/api/config', (req, res) => {
     res.status(503).json({ error: 'Config not yet loaded' });
     return;
   }
-  const { formats: _studioFormats, format: _format, ...publicConfig } = creativeConfig;
+  const { formats: _studioFormats, formatCss: _studioFormatCss, format: _format, ...publicConfig } = creativeConfig;
   res.json({ ...publicConfig, format: formatInfo() });
 });
 
@@ -661,13 +771,13 @@ app.get('/api/config', (req, res) => {
 // File watching
 // ------------------------------------------------------------
 
-// custom.js, format.js and pages/ (which may not exist yet — chokidar picks them
+// custom.js, format.js, format.css and pages/ (which may not exist yet — chokidar picks them
 // up when they are created). Started by start(), after the CLI has written the
 // project files, so creating them does not read as an edit.
 let watcher = null;
 
 function startWatching() {
-  watcher = chokidar.watch([customJsPath, formatJsPath, pagesDir], {
+  watcher = chokidar.watch([customJsPath, formatJsPath, formatCssPath, pagesDir], {
     persistent: true,
     ignoreInitial: true,
     ignored: (p) => path.basename(p).startsWith('.') && p !== userDir,
@@ -684,8 +794,12 @@ function onWatchedFileEvent(event, changedPath) {
   const rel = path.relative(userDir, changedPath);
 
   if (changedPath === formatJsPath) {
-    if (event === 'add' && !creativeConfig.format) claimFormatOwner();
+    if (event === 'add' && !creativeConfig.format) claimFormatOwner('format.js');
     if (event === 'unlink') log(` format.js removed — flowlines render with Studio's format JS`);
+  }
+  if (changedPath === formatCssPath) {
+    if (event === 'add' && !creativeConfig.format) claimFormatOwner('format.css');
+    if (event === 'unlink') log(` format.css removed — flowlines render with Studio's format CSS`);
   }
 
   log(` File ${event === 'add' ? 'added' : event === 'unlink' ? 'removed' : 'changed'}: ${rel}`);
@@ -694,10 +808,12 @@ function onWatchedFileEvent(event, changedPath) {
 
   // If the save just brought us level with Studio, say so — and remember it,
   // so we stop treating the difference as unpushed work.
-  const kind = changedPath === customJsPath ? 'custom' : changedPath === formatJsPath ? 'format' : null;
+  const kind = changedPath === customJsPath ? 'custom'
+    : changedPath === formatJsPath ? 'format'
+    : changedPath === formatCssPath ? 'formatCss' : null;
   if (kind && event !== 'unlink') {
     const remote = studioState[kind].code;
-    if (remote !== null && sync.sameCode(sync.readLocal(userDir, kind), remote)) {
+    if (remote !== null && sync.sameCode(sync.readLocal(userDir, kind), remote, kind)) {
       sync.writeBase(userDir, remote, kind);
       sync.removeRemoteCopy(userDir, kind);
       log(` ${ansi.green}✓ ${sync.kindInfo(kind).file} now matches Studio${ansi.reset}`);
@@ -709,22 +825,25 @@ function onWatchedFileEvent(event, changedPath) {
 // Studio Sync Watch
 // ============================================================
 
-// Studio's custom JS and format JS can be edited by anyone at any time. Poll for
+// Studio's custom JS, format JS and format CSS can be edited by anyone at any time. Poll for
 // them so a session that has been open for hours notices before a local file is
 // pasted back over somebody else's work.
 const studioState = {
   checkedAt: null,     // ISO timestamp of the last successful check
   error: null,         // last fetch error, if the most recent check failed
   // Per kind: last code observed in Studio, when it last changed under us, and
-  // where that version was archived. `format` is the format.js owner's format JS.
+  // where that version was archived. `format` is the format.js owner's format JS,
+  // `formatCss` its format CSS.
   custom: { code: null, changedAt: null, archivedPath: null },
   format: { code: null, changedAt: null, archivedPath: null },
+  formatCss: { code: null, changedAt: null, archivedPath: null },
   formats: {},         // every flowline's format JS as last seen in Studio
+  formatCssByFlowline: {}, // every flowline's format CSS as last seen in Studio
 };
 let studioPollTimer = null;
 let lastLoggedStudioError = null;
 
-const KIND_LABEL = { custom: 'custom JS', format: 'format JS' };
+const KIND_LABEL = { custom: 'custom JS', format: 'format JS', formatCss: 'format CSS' };
 
 function studioPollInterval() {
   const raw = process.env.RAD_CODER_STUDIO_POLL_MS;
@@ -742,6 +861,7 @@ function getSyncStatus(kind = 'custom') {
     local,
     remote,
     base: sync.readBase(userDir, kind),
+    kind,
   });
 
   return {
@@ -755,7 +875,7 @@ function getSyncStatus(kind = 'custom') {
     // Always expressed as "what Studio has that local does not"
     summary: status.state === 'in-sync' || status.state === 'no-local'
       ? null
-      : sync.diffSummary(local, remote),
+      : sync.diffSummary(local, remote, kind),
   };
 }
 
@@ -765,7 +885,7 @@ function getSyncStatus(kind = 'custom') {
  */
 function observeStudio(kind, code) {
   const state = studioState[kind];
-  if (sync.sameCode(code, state.code)) {
+  if (sync.sameCode(code, state.code, kind)) {
     state.code = code;
     return false;
   }
@@ -783,7 +903,7 @@ function observeStudio(kind, code) {
     log(` ${ansi.dim}Studio's ${label} changed (${studioField}); there is no local ${file}${ansi.reset}`);
     return true;
   }
-  if (sync.sameCode(local, code)) {
+  if (sync.sameCode(local, code, kind)) {
     sync.writeBase(userDir, code, kind);
     sync.removeRemoteCopy(userDir, kind);
     log('');
@@ -796,7 +916,7 @@ function observeStudio(kind, code) {
   log('');
   log(` ${ansi.yellow}${ansi.bold}⚠ STUDIO CHANGED — someone edited this creative's ${label}${ansi.reset}`);
   log(` ${ansi.yellow}  your local ${file} no longer matches Studio (${studioField})${ansi.reset}`);
-  log(` ${ansi.yellow}  Studio vs your local: ${sync.diffSummary(local, code)}${ansi.reset}`);
+  log(` ${ansi.yellow}  Studio vs your local: ${sync.diffSummary(local, code, kind)}${ansi.reset}`);
   log(` ${ansi.yellow}  Studio version → ${sync.relative(userDir, remoteCopy)}${ansi.reset}`);
   if (state.archivedPath) {
     log(` ${ansi.yellow}  archived copy  → ${sync.relative(userDir, state.archivedPath)}${ansi.reset}`);
@@ -845,10 +965,25 @@ async function checkStudio(announce = false) {
     const fmt = creativeConfig && creativeConfig.format;
     if (fmt) changed = observeStudio('format', result.formats[fmt.flowlineId] || null) || changed;
   }
+  if (result.formatCss) {
+    const previous = studioState.formatCssByFlowline;
+    const cssChanged = Object.keys({ ...previous, ...result.formatCss })
+      .some(fid => !sync.sameCode(previous[fid], result.formatCss[fid], 'formatCss'));
+    studioState.formatCssByFlowline = result.formatCss;
+    if (cssChanged) {
+      // The published stylesheets changed with it, and so may what a page renders
+      publishedCss.clear();
+      refreshFormatGroup();
+      broadcastReload();
+    }
+    const fmt = creativeConfig && creativeConfig.format;
+    if (fmt) changed = observeStudio('formatCss', result.formatCss[fmt.flowlineId] || null) || changed;
+  }
 
   if (!changed && announce) {
     const parts = [`custom.js: ${describeSyncState(getSyncStatus('custom').state)}`];
     if (creativeConfig && creativeConfig.format) parts.push(`format.js: ${describeSyncState(getSyncStatus('format').state)}`);
+    if (hasFormatCss()) parts.push(`format.css: ${describeSyncState(getSyncStatus('formatCss').state)}`);
     log(` ${ansi.dim}Studio unchanged (${parts.join('; ')})${ansi.reset}`);
   }
 
@@ -875,6 +1010,8 @@ function startStudioWatch() {
     studioState.formats = creativeConfig.formats || {};
     const fmt = creativeConfig.format;
     studioState.format.code = fmt ? studioState.formats[fmt.flowlineId] || null : null;
+    studioState.formatCssByFlowline = creativeConfig.formatCss || {};
+    studioState.formatCss.code = fmt ? studioState.formatCssByFlowline[fmt.flowlineId] || null : null;
     studioState.checkedAt = new Date().toISOString();
   }
 
@@ -920,7 +1057,7 @@ function showDiff(kind = 'custom') {
     log(` Nothing to diff — no ${KIND_LABEL[kind]} locally or in Studio`);
     return;
   }
-  const diff = sync.renderDiff(userDir, local, code, `local-${file}`, `studio-${file}`);
+  const diff = sync.renderDiff(userDir, local, code, `local-${file}`, `studio-${file}`, kind);
   const diffLines = diff.split('\n');
   log('');
   log(` ── local ${file} vs Studio ──────`);
@@ -1049,13 +1186,20 @@ async function start(prefetchedConfig = null) {
   fmtInfo.others.forEach((g) => {
     console.log(`   Different format JS in Studio (not in format.js): ${g.names.join(', ')}`);
   });
+  if (fmtInfo.css.hasLocal && fmtInfo.flowlineId) {
+    const copies = fmtInfo.css.appliesTo.length - 1;
+    console.log(` - Format CSS: format.css → "${fmtInfo.flowlineName}"${copies > 0 ? ` (+${copies} flowline${copies > 1 ? 's' : ''} with the same format CSS)` : ''}`);
+  } else {
+    console.log(' - Format CSS: none');
+  }
 
   if (creativeConfig.allFlowlines.length > 1) {
     console.log(`\n Available Flowlines (${creativeConfig.allFlowlines.length}):`);
     creativeConfig.allFlowlines.forEach((fl, i) => {
       const marker = fl.id === creativeConfig.flowlineId ? ' (selected)' : '';
       const fmt = fmtInfo.appliesTo.includes(fl.id) ? ' [format.js]' : fl.hasFormatJs ? ' [format JS]' : '';
-      console.log(`   ${i + 1}. ${fl.name}${fmt}${marker}`);
+      const css = fmtInfo.css.hasLocal && fmtInfo.css.appliesTo.includes(fl.id) ? ' [format.css]' : fl.hasFormatCss ? ' [format CSS]' : '';
+      console.log(`   ${i + 1}. ${fl.name}${fmt}${css}${marker}`);
     });
   }
 
@@ -1075,7 +1219,10 @@ async function start(prefetchedConfig = null) {
     console.log(` Client page: ${openUrl()}`);
   }
   console.log(`\n Working directory: ${userDir}`);
-  console.log(` Edit custom.js${fmtInfo.flowlineId ? ' or format.js' : ''} and save to hot-reload\n`);
+  const editable = ['custom.js'];
+  if (fmtInfo.hasLocal) editable.push('format.js');
+  if (fmtInfo.css.hasLocal) editable.push('format.css');
+  console.log(` Edit ${editable.join(', ').replace(/, ([^,]*)$/, ' or $1')} and save to hot-reload\n`);
 
   // Small delay to ensure server is fully ready before opening browser
   await new Promise(resolve => setTimeout(resolve, 500));
@@ -1119,6 +1266,13 @@ function hasFormat() {
   return !!(creativeConfig && (creativeConfig.format || fs.existsSync(formatJsPath)));
 }
 
+/** There is format CSS to track: a local format.css, or Studio CSS for its flowline */
+function hasFormatCss() {
+  if (!creativeConfig) return false;
+  const fmt = creativeConfig.format;
+  return fs.existsSync(formatCssPath) || !!(fmt && studioState.formatCssByFlowline[fmt.flowlineId]);
+}
+
 function getMainMenuItems() {
   const items = [
     { label: 'Open Browser', id: 'open-browser' },
@@ -1143,6 +1297,13 @@ function getMainMenuItems() {
     items.push(
       { label: 'Diff format.js vs Studio', id: 'sync-diff-format' },
       { label: 'Pull format.js from Studio', id: 'sync-pull-format' },
+    );
+  }
+
+  if (hasFormatCss()) {
+    items.push(
+      { label: 'Diff format.css vs Studio', id: 'sync-diff-format-css' },
+      { label: 'Pull format.css from Studio', id: 'sync-pull-format-css' },
     );
   }
 
@@ -1239,7 +1400,7 @@ function startInteractiveMenu() {
         break;
 
       case 'sync-check':
-        log(` Checking Studio for custom JS${hasFormat() ? ' and format JS' : ''} changes...`);
+        log(` Checking Studio for custom JS${hasFormat() ? ', format JS' : ''}${hasFormatCss() ? ', format CSS' : ''} changes...`);
         checkStudio(true).catch((err) => {
           log(` ✗ Studio check failed: ${err.message}`);
         });
@@ -1261,6 +1422,14 @@ function startInteractiveMenu() {
         pullFromStudio('format');
         break;
 
+      case 'sync-diff-format-css':
+        showDiff('formatCss');
+        break;
+
+      case 'sync-pull-format-css':
+        pullFromStudio('formatCss');
+        break;
+
       case 'status': {
         const syncStatus = getSyncStatus('custom');
         const fmt = formatInfo();
@@ -1279,6 +1448,11 @@ function startInteractiveMenu() {
           const formatStatus = getSyncStatus('format');
           log(` Format JS   : format.js → ${fmt.flowlineName} (${fmt.appliesTo.length} flowline${fmt.appliesTo.length > 1 ? 's' : ''})`);
           log(` Format sync : ${describeSyncState(formatStatus.state)}${formatStatus.summary ? ` (${formatStatus.summary})` : ''}`);
+        }
+        if (hasFormatCss()) {
+          const cssStatus = getSyncStatus('formatCss');
+          log(` Format CSS  : format.css → ${fmt.flowlineName || 'no flowline yet'} (${fmt.css.appliesTo.length} flowline${fmt.css.appliesTo.length === 1 ? '' : 's'})`);
+          log(` CSS sync    : ${describeSyncState(cssStatus.state)}${cssStatus.summary ? ` (${cssStatus.summary})` : ''}`);
         }
         log(` Last check  : ${syncStatus.checkedAt || 'never'}${syncStatus.error ? ` — ${syncStatus.error}` : ''}`);
         log(' ───────────────────────────────────');

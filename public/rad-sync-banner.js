@@ -3,12 +3,12 @@
  *
  * Injected into the test page by the dev server (see sendTestHtml). Polls
  * /api/sync-status and shows a bar at the top of the page when the local
- * custom.js (or format.js) and the version in Studio have drifted apart — the browser is
+ * custom.js (or format.js / format.css) and the version in Studio have drifted apart — the browser is
  * where you are looking, so the warning has to be visible there too.
  */
 (function () {
   var POLL_MS = 5000;
-  // {file} becomes custom.js or format.js, {what} custom JS or format JS
+  // {file} becomes custom.js, format.js or format.css, {what} custom JS, format JS or format CSS
   var STATES = {
     'remote-ahead': {
       background: '#b45309',
@@ -28,7 +28,8 @@
   };
   var NAMES = {
     custom: { file: 'custom.js', what: 'custom JS', remote: 'custom.remote.js' },
-    format: { file: 'format.js', what: 'format JS', remote: 'format.remote.js' }
+    format: { file: 'format.js', what: 'format JS', remote: 'format.remote.js' },
+    formatCss: { file: 'format.css', what: 'format CSS', remote: 'format.remote.css' }
   };
 
   function fill(text, kind) {
@@ -43,11 +44,12 @@
     bar = null;
   }
 
-  // Problems to show: custom.js first, then format.js
+  // Problems to show: custom.js first, then format.js, then format.css
   function problems(status) {
     var list = [];
     if (STATES[status.state]) list.push({ kind: 'custom', status: status });
     if (status.format && STATES[status.format.state]) list.push({ kind: 'format', status: status.format });
+    if (status.formatCss && STATES[status.formatCss.state]) list.push({ kind: 'formatCss', status: status.formatCss });
     return list;
   }
 
@@ -99,7 +101,8 @@
       .then(function (res) { return res.json(); })
       .then(function (status) {
         // A state change re-shows a banner the user dismissed earlier.
-        var state = status.state + '|' + (status.format ? status.format.state : '');
+        var state = status.state + '|' + (status.format ? status.format.state : '') +
+          '|' + (status.formatCss ? status.formatCss.state : '');
         if (state !== lastState) {
           lastState = state;
           dismissed = false;

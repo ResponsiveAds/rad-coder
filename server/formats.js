@@ -11,6 +11,10 @@
  * whose Studio format JS is identical to the owner's. Those flowlines render with
  * the local format.js; all other flowlines render with their own Studio format JS,
  * exactly as they would live.
+ *
+ * The format CSS (Format → Custom CSS) works the same way, in format.css. It has
+ * the same owner flowline as format.js, and also applies to every flowline whose
+ * Studio format CSS is identical to the owner's.
  */
 
 const sync = require('./sync');
@@ -19,24 +23,30 @@ const sync = require('./sync');
  * Pick the owner flowline on a first run.
  *   1. the selected flowline, if it has format JS in Studio
  *   2. otherwise the first flowline that has format JS
- *   3. otherwise null — there is no format JS to work on yet
+ *   3. the same two steps for format CSS
+ *   4. otherwise null — there is no format code to work on yet
  */
-function pickOwner(flowlineIds, formats, selectedId) {
-  if (selectedId && formats[selectedId]) return selectedId;
-  return flowlineIds.find((id) => formats[id]) || null;
+function pickOwner(flowlineIds, formats, selectedId, formatCss = {}) {
+  for (const codes of [formats, formatCss]) {
+    if (selectedId && codes[selectedId]) return selectedId;
+    const first = flowlineIds.find((id) => codes[id]);
+    if (first) return first;
+  }
+  return null;
 }
 
 /**
  * Flowlines that use the local format.js: the owner, plus every flowline whose
- * Studio format JS equals the owner's Studio format JS.
+ * Studio format JS equals the owner's Studio format JS. With kind 'formatCss' and
+ * the Studio format CSS map, the same for format.css.
  */
-function appliesTo(ownerId, flowlineIds, formats) {
+function appliesTo(ownerId, flowlineIds, formats, kind = 'format') {
   if (!ownerId) return [];
   const ownerCode = formats[ownerId];
   const ids = [ownerId];
   if (!ownerCode) return ids;
   for (const id of flowlineIds) {
-    if (id !== ownerId && formats[id] && sync.sameCode(formats[id], ownerCode)) ids.push(id);
+    if (id !== ownerId && formats[id] && sync.sameCode(formats[id], ownerCode, kind)) ids.push(id);
   }
   return ids;
 }

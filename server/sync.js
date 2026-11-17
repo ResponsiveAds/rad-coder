@@ -14,8 +14,9 @@
  * agree. Comparing local/remote/base gives an unambiguous state (see classify).
  *
  * The same applies to the format JS (Studio: Format → Custom JS), which rad-coder
- * keeps in format.js. Every function takes a `kind` ('custom' | 'format') that
- * picks the file set; it defaults to 'custom'.
+ * keeps in format.js, and to the format CSS (Format → Custom CSS), kept in
+ * format.css. Every function takes a `kind` ('custom' | 'format' | 'formatCss')
+ * that picks the file set; it defaults to 'custom'.
  *
  * State lives in a `.rad-coder/` folder next to custom.js:
  *   base.js              the base snapshot of custom.js
@@ -24,6 +25,9 @@
  *   format/history/      every distinct Studio format JS we ever observed
  *   backups/custom-*.js  local custom.js, saved before any overwrite
  *   backups/format-*.js  local format.js, saved before any overwrite
+ *   format-css/base.css  the base snapshot of format.css
+ *   format-css/history/  every distinct Studio format CSS we ever observed
+ *   backups/format-*.css local format.css, saved before any overwrite
  */
 
 const crypto = require('crypto');
@@ -43,6 +47,7 @@ const KINDS = {
     base: path.join(SYNC_DIR, 'base.js'),
     history: path.join(SYNC_DIR, 'history'),
     backupPrefix: 'custom-',
+    ext: '.js',
     studioField: 'Creative → Settings → Custom JS',
   },
   format: {
@@ -51,7 +56,19 @@ const KINDS = {
     base: path.join(SYNC_DIR, 'format', 'base.js'),
     history: path.join(SYNC_DIR, 'format', 'history'),
     backupPrefix: 'format-',
+    ext: '.js',
     studioField: 'Format → Custom JS',
+  },
+  formatCss: {
+    file: 'format.css',
+    remote: 'format.remote.css',
+    base: path.join(SYNC_DIR, 'format-css', 'base.css'),
+    history: path.join(SYNC_DIR, 'format-css', 'history'),
+    backupPrefix: 'format-',
+    ext: '.css',
+    studioField: 'Format → Custom CSS',
+    // Studio hands CSS back with every double quote turned into a single one
+    comparable: (code) => code.replace(/"/g, "'"),
   },
 };
 
@@ -69,22 +86,24 @@ function kindInfo(kind = 'custom') {
  * Normalize code before comparing. Studio round-trips line endings and trailing
  * whitespace, so a raw string compare would report phantom conflicts.
  */
-function normalize(code) {
-  return String(code == null ? '' : code)
+function normalize(code, kind = 'custom') {
+  const { comparable } = kindInfo(kind);
+  const text = String(code == null ? '' : code)
     .replace(/\r\n/g, '\n')
     .replace(/[ \t]+$/gm, '')
     .trim();
+  return comparable ? comparable(text) : text;
 }
 
 /** Short content fingerprint of the normalized code */
-function hash(code) {
-  const normalized = normalize(code);
+function hash(code, kind = 'custom') {
+  const normalized = normalize(code, kind);
   if (!normalized) return null;
   return crypto.createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 12);
 }
 
-function sameCode(a, b) {
-  return normalize(a) === normalize(b);
+function sameCode(a, b, kind = 'custom') {
+  return normalize(a, kind) === normalize(b, kind);
 }
 
 /**
@@ -94,6 +113,7 @@ function sameCode(a, b) {
  * @param {string|null} arg.local  contents of custom.js
  * @param {string|null} arg.remote contents of Studio's customjs
  * @param {string|null} arg.base   contents of .rad-coder/base.js
+ * @param {string} [arg.kind]      'custom' | 'format' | 'formatCss'
  * @returns {{state: string, localHash: ?string, remoteHash: ?string, baseHash: ?string}}
  *
  * States:
@@ -105,23 +125,23 @@ function sameCode(a, b) {
  *   diverged            both sides changed since base — the dangerous case
  *   unknown-divergence  sides differ and there is no base to reason from
  */
-function classify({ local, remote, base }) {
+function classify({ local, remote, base, kind = 'custom' }) {
   const result = {
     state: 'in-sync',
-    localHash: hash(local),
-    remoteHash: hash(remote),
-    baseHash: hash(base),
+    localHash: hash(local, kind),
+    remoteHash: hash(remote, kind),
+    baseHash: hash(base, kind),
   };
 
-  const hasLocal = normalize(local).length > 0;
-  const hasRemote = normalize(remote).length > 0;
+  const hasLocal = normalize(local, kind).length > 0;
+  const hasRemote = normalize(remote, kind).length > 0;
 
   if (!hasLocal) {
     result.state = 'no-local';
     return result;
   }
 
-  if (sameCode(local, remote)) {
+  if (sameCode(local, remote, kind)) {
     result.state = 'in-sync';
     return result;
   }
@@ -130,7 +150,7 @@ function classify({ local, remote, base }) {
     // Studio has no custom JS. Normally that just means our local work was
     // never pasted in. But if the base says Studio used to have code and we
     // have not touched ours, someone cleared it — worth surfacing.
-    const clearedInStudio = normalize(base).length > 0 && sameCode(local, base);
+    const clearedInStudio = normalize(base, kind).length > 0 && sameCode(local, base, kind);
     result.state = clearedInStudio ? 'remote-ahead' : 'local-ahead';
     return result;
   }
@@ -140,8 +160,8 @@ function classify({ local, remote, base }) {
     return result;
   }
 
-  const remoteMovedAwayFromBase = !sameCode(remote, base);
-  const localMovedAwayFromBase = !sameCode(local, base);
+  const remoteMovedAwayFromBase = !sameCode(remote, base, kind);
+  const localMovedAwayFromBase = !sameCode(local, base, kind);
 
   if (!remoteMovedAwayFromBase) {
     result.state = 'local-ahead';
@@ -158,17 +178,17 @@ function classify({ local, remote, base }) {
 // Diffing
 // ============================================================
 
-function lines(code) {
-  return normalize(code).split('\n');
+function lines(code, kind = 'custom') {
+  return normalize(code, kind).split('\n');
 }
 
 /**
  * Cheap change summary for one-line messages.
  * @returns {{added: number, removed: number, firstChangedLine: ?number}}
  */
-function diffStats(a, b) {
-  const from = lines(a);
-  const to = lines(b);
+function diffStats(a, b, kind = 'custom') {
+  const from = lines(a, kind);
+  const to = lines(b, kind);
 
   let head = 0;
   while (head < from.length && head < to.length && from[head] === to[head]) head++;
@@ -191,8 +211,8 @@ function diffStats(a, b) {
 }
 
 /** One-line human summary, e.g. "+12 / -3 lines, first change at line 47" */
-function diffSummary(a, b) {
-  const { added, removed, firstChangedLine } = diffStats(a, b);
+function diffSummary(a, b, kind = 'custom') {
+  const { added, removed, firstChangedLine } = diffStats(a, b, kind);
   if (!added && !removed) return 'no line differences (whitespace only)';
   const at = firstChangedLine ? `, first change at line ${firstChangedLine}` : '';
   return `+${added} / -${removed} lines${at}`;
@@ -203,15 +223,16 @@ function diffSummary(a, b) {
  * changed-block listing when git is unavailable.
  * @returns {string}
  */
-function renderDiff(userDir, aCode, bCode, aLabel = 'local', bLabel = 'studio') {
+function renderDiff(userDir, aCode, bCode, aLabel = 'local', bLabel = 'studio', kind = 'custom') {
+  const { ext } = kindInfo(kind);
   const tmpDir = path.join(userDir, SYNC_DIR, 'tmp');
   try {
     fs.mkdirSync(tmpDir, { recursive: true });
     // Names without a directory keep git's diff header short and readable
-    const aName = aLabel.endsWith('.js') ? aLabel : `${aLabel}.js`;
-    const bName = bLabel.endsWith('.js') ? bLabel : `${bLabel}.js`;
-    fs.writeFileSync(path.join(tmpDir, aName), normalize(aCode) + '\n', 'utf-8');
-    fs.writeFileSync(path.join(tmpDir, bName), normalize(bCode) + '\n', 'utf-8');
+    const aName = aLabel.endsWith(ext) ? aLabel : `${aLabel}${ext}`;
+    const bName = bLabel.endsWith(ext) ? bLabel : `${bLabel}${ext}`;
+    fs.writeFileSync(path.join(tmpDir, aName), normalize(aCode, kind) + '\n', 'utf-8');
+    fs.writeFileSync(path.join(tmpDir, bName), normalize(bCode, kind) + '\n', 'utf-8');
 
     try {
       execFileSync('git', ['diff', '--no-index', '--unified=3', '--', aName, bName], {
@@ -228,7 +249,7 @@ function renderDiff(userDir, aCode, bCode, aLabel = 'local', bLabel = 'studio') 
       throw err;
     }
   } catch (_) {
-    return fallbackDiff(aCode, bCode, aLabel, bLabel);
+    return fallbackDiff(aCode, bCode, aLabel, bLabel, kind);
   } finally {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -236,10 +257,10 @@ function renderDiff(userDir, aCode, bCode, aLabel = 'local', bLabel = 'studio') 
   }
 }
 
-function fallbackDiff(aCode, bCode, aLabel, bLabel) {
-  const from = lines(aCode);
-  const to = lines(bCode);
-  const { added, removed, firstChangedLine } = diffStats(aCode, bCode);
+function fallbackDiff(aCode, bCode, aLabel, bLabel, kind = 'custom') {
+  const from = lines(aCode, kind);
+  const to = lines(bCode, kind);
+  const { added, removed, firstChangedLine } = diffStats(aCode, bCode, kind);
 
   if (!added && !removed) return '(no differences)';
 
@@ -292,22 +313,22 @@ function stamp() {
   return new Date().toISOString().replace(/\.\d+Z$/, '').replace(/:/g, '-');
 }
 
-function jsEntries(dir, prefix = '') {
+function entries(dir, ext, prefix = '') {
   try {
-    return fs.readdirSync(dir).filter(f => f.endsWith('.js') && f.startsWith(prefix)).sort();
+    return fs.readdirSync(dir).filter(f => f.endsWith(ext) && f.startsWith(prefix)).sort();
   } catch (_) {
     return [];
   }
 }
 
-function newestEntry(dir) {
-  const entries = jsEntries(dir);
-  return entries.length ? path.join(dir, entries[entries.length - 1]) : null;
+function newestEntry(dir, ext) {
+  const found = entries(dir, ext);
+  return found.length ? path.join(dir, found[found.length - 1]) : null;
 }
 
-function pruneDir(dir, keep, prefix = '') {
-  const entries = jsEntries(dir, prefix);
-  for (const stale of entries.slice(0, Math.max(0, entries.length - keep))) {
+function pruneDir(dir, keep, ext, prefix = '') {
+  const found = entries(dir, ext, prefix);
+  for (const stale of found.slice(0, Math.max(0, found.length - keep))) {
     try {
       fs.rmSync(path.join(dir, stale), { force: true });
     } catch (_) { /* best effort */ }
@@ -321,15 +342,16 @@ function pruneDir(dir, keep, prefix = '') {
  * @returns {string|null} path written, or null if nothing to archive
  */
 function archiveRemote(userDir, code, kind = 'custom') {
-  if (normalize(code).length === 0) return null;
+  if (normalize(code, kind).length === 0) return null;
 
-  const dir = ensureDir(path.join(userDir, kindInfo(kind).history));
-  const newest = newestEntry(dir);
-  if (newest && sameCode(readFileOrNull(newest), code)) return null;
+  const { history, ext } = kindInfo(kind);
+  const dir = ensureDir(path.join(userDir, history));
+  const newest = newestEntry(dir, ext);
+  if (newest && sameCode(readFileOrNull(newest), code, kind)) return null;
 
-  const target = path.join(dir, `${stamp()}.js`);
+  const target = path.join(dir, `${stamp()}${ext}`);
   fs.writeFileSync(target, String(code), 'utf-8');
-  pruneDir(dir, MAX_HISTORY);
+  pruneDir(dir, MAX_HISTORY, ext);
   return target;
 }
 
@@ -341,11 +363,11 @@ function backupLocal(userDir, kind = 'custom') {
   const local = readLocal(userDir, kind);
   if (local == null) return null;
 
-  const { backupPrefix } = kindInfo(kind);
+  const { backupPrefix, ext } = kindInfo(kind);
   const dir = ensureDir(path.join(syncDir(userDir), 'backups'));
-  const target = path.join(dir, `${backupPrefix}${stamp()}.js`);
+  const target = path.join(dir, `${backupPrefix}${stamp()}${ext}`);
   fs.writeFileSync(target, local, 'utf-8');
-  pruneDir(dir, MAX_BACKUPS, backupPrefix);
+  pruneDir(dir, MAX_BACKUPS, ext, backupPrefix);
   return target;
 }
 
@@ -356,8 +378,9 @@ function backupLocal(userDir, kind = 'custom') {
  * @returns {Array<{name: string, code: string}>}
  */
 function takeHistory(userDir, kind = 'custom') {
-  const dir = path.join(userDir, kindInfo(kind).history);
-  return jsEntries(dir).map(name => ({ name, code: fs.readFileSync(path.join(dir, name), 'utf-8') }));
+  const { history, ext } = kindInfo(kind);
+  const dir = path.join(userDir, history);
+  return entries(dir, ext).map(name => ({ name, code: fs.readFileSync(path.join(dir, name), 'utf-8') }));
 }
 
 /**

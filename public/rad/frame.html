@@ -90,7 +90,8 @@
           sizes: flowline.sizes,
           isFluid: flowline.isFluid,
           adSource: config.adSource,
-          flSource: 'https://s3-eu-west-1.amazonaws.com/publish.responsiveads.com/flowlines/',
+          // Radical does not load the flowline stylesheet in a cross-origin frame
+          flSource: location.origin + (init.noformat ? '/rad/flowlines-plain/' : '/rad/flowlines/'),
           tracking: false,
           screenshot: false,
           config: { _default: { selectedVariant: '', customjs: custom.code || '', flowlineCustomjs: formatJs } }

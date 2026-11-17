@@ -1,0 +1,35 @@
+/* ------------------------------------------------------------------
+ * <Format name> — Format CSS (Studio: Format → Custom CSS)
+ * Flowline:  "<flowline name>" <flowline id>
+ * Goes together with the Format JS (format.js), which only toggles classes:
+ *
+ *   on <html>                        my-format--on      <what this state means>
+ *   on Radical's iframe container    my-format
+ *   on the publisher's slot          my-format-slot
+ *
+ * How it reaches the page
+ *   Studio appends this file, as written, to the format's published stylesheet
+ *   rad-fl-<flowline id>.css. Radical loads that stylesheet into the page that
+ *   holds the ad (friendly iframe, or tag in the page). Selectors are not
+ *   prefixed, so rules can target anything on the page.
+ *   Not loaded in a GAM SafeFrame: nothing here applies there.
+ *
+ * Overriding the generated rules
+ *   The same stylesheet has generated rules on the container, most !important:
+ *     .rad-fl-<id>        { position: static !important; z-index: 999 !important; … }
+ *     .rad-fl-<id> iframe { max-width: <width>px !important; … }
+ *   To win, use !important and a more specific selector, as below.
+ * ------------------------------------------------------------------ */
+
+/* Example: pin the ad to the bottom of the screen while the state is on
+html.my-format--on .my-format {
+  position: fixed !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  z-index: 1000 !important;
+}
+html.my-format--on body {
+  padding-bottom: 90px !important;
+}
+*/

@@ -19,6 +19,10 @@
  *  reach it marks the creative window, so the work happens once.
  *  Skipped in the Studio editor and in screenshot renders.
  *
+ * Styles: keep them in the Format CSS (format.css → Format → Custom CSS) and only
+ * add / remove classes here. Radical loads that CSS into the page (not in a
+ * SafeFrame). Starter: /rad/templates/format.css
+ *
  * Friendly iframe: the publisher page is reachable (frameElement, window.top).
  * SafeFrame:       it is not — only $sf.ext (geom(), expand()) and
  *                  IntersectionObserver tell you where the frame is.

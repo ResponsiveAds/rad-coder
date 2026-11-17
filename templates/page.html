@@ -6,10 +6,12 @@
   <title>Client page — example.com mimic</title>
   <!--
     Client test page: a copy of the publisher page the creative will run on, so the
-    format JS (format.js) and custom.js can be tested in the real placement.
+    format JS (format.js), format CSS (format.css) and custom.js can be tested in
+    the real placement. format.css needs no <link> here: it arrives with the
+    format's stylesheet, as it does live.
 
     Served by rad-coder at http://localhost:3000/pages/<this file>, with hot reload
-    on every save of custom.js, format.js or anything in pages/.
+    on every save of custom.js, format.js, format.css or anything in pages/.
 
     How to build one from the real page (record what you measured here):
       - URL measured:            https://example.com/article?adkv_test=…
@@ -24,7 +26,7 @@
     through them.
 
     Query parameters: ?flowline=<id or part of name>  ?frame=friendly|safeframe|none
-                      ?noformat=1 (without format JS)  ?debug=0 (hide the panel)
+                      ?noformat=1 (without format JS/CSS)  ?debug=0 (hide the panel)
   -->
   <style>
     * { box-sizing: border-box; }

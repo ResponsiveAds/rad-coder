@@ -2,8 +2,8 @@
  * rad-coder client page harness
  *
  * Put the creative into an ad slot of a client test page (pages/*.html) the way
- * the ad server would, with the local custom.js and format.js. One script tag per
- * slot:
+ * the ad server would, with the local custom.js, format.js and format.css. One
+ * script tag per slot:
  *
  *   <script src="/rad/harness.js"
  *           data-slot="#leaderboard"          element the ad goes into (required)
@@ -26,6 +26,8 @@
  *
  * Like a live deployment script, the format JS also runs a second time in the
  * tag's window right after Radical loaded (it is appended to d-<id>.js live).
+ * The format's stylesheet comes from the dev server (/rad/flowlines/), which puts
+ * the local format.css in place of the format's Custom CSS from Studio.
  *
  * Query parameters override the attributes: ?flowline= ?frame= ?noformat=1 ?debug=0
  * Pages listen for `rad:slot-render-ended` (detail: {slot, frame, mode}) to do what
@@ -41,7 +43,9 @@
   var noFormat = params.get('noformat') === '1';
   var GPT_SANDBOX = 'allow-forms allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-same-origin ' +
     'allow-scripts allow-top-navigation-by-user-activation allow-presentation';
-  var FL_SOURCE = 'https://s3-eu-west-1.amazonaws.com/publish.responsiveads.com/flowlines/';
+  // The dev server's copy of publish.responsiveads.com/flowlines/ (the flSource
+  // Studio reports does not resolve). "-plain" leaves the format CSS out.
+  var FL_SOURCE = location.origin + (noFormat ? '/rad/flowlines-plain/' : '/rad/flowlines/');
 
   // ---------------------------------------------------------------------------
   // Shared state (one per page, however many slots)
@@ -144,7 +148,6 @@
       sizes: flowline.sizes,
       isFluid: flowline.isFluid,
       adSource: config.adSource,
-      // the flSource Studio reports does not resolve; same override as test.html
       flSource: FL_SOURCE,
       tracking: false,
       screenshot: false,
@@ -206,6 +209,9 @@
     var format = noFormat
       ? { code: '', source: 'disabled' }
       : await getJson('/api/format-js?flowline=' + encodeURIComponent(flowline.id));
+    var formatCss = noFormat
+      ? { code: '', source: 'disabled' }
+      : await getJson('/api/format-css?flowline=' + encodeURIComponent(flowline.id));
     var options = radicalOptions(config, flowline, custom.code || '', format.code || '', extra);
 
     var slot = {
@@ -213,6 +219,7 @@
       mode: mode,
       flowline: { id: flowline.id, name: flowline.name },
       format: { source: format.source, file: format.file || null },
+      formatCss: { source: formatCss.source, file: formatCss.file || null },
       options: extra,
       frame: null,
       rendered: false,
@@ -450,7 +457,9 @@
           var r = s.element.getBoundingClientRect();
           html += '<div><b>slot</b> ' + esc(s.slot) + ' · top ' + Math.round(r.top) + ' h ' + Math.round(r.height) + ' · ' + esc(s.mode) + (s.rendered ? '' : ' · loading…') + '</div>' +
             '<div><b>flowline</b> ' + esc(s.flowline.name) + '</div>' +
-            '<div><b>format JS</b> ' + (s.format.source === 'local' ? 'format.js (local)' : s.format.source === 'studio' ? 'from Studio' : s.format.source === 'disabled' ? 'OFF (?noformat=1)' : 'none') + '</div>';
+            '<div><b>format JS</b> ' + (s.format.source === 'local' ? 'format.js (local)' : s.format.source === 'studio' ? 'from Studio' : s.format.source === 'disabled' ? 'OFF (?noformat=1)' : 'none') + '</div>' +
+            '<div><b>format CSS</b> ' + (s.mode === 'safeframe' ? 'not loaded in a SafeFrame'
+              : s.formatCss.source === 'local' ? 'format.css (local)' : s.formatCss.source === 'studio' ? 'from Studio' : s.formatCss.source === 'disabled' ? 'OFF (?noformat=1)' : 'none') + '</div>';
         });
         H.events.slice(-3).forEach(function (ev) {
           html += '<div class="ev">' + esc(ev.name) + ' ' + esc(JSON.stringify(ev.detail)).slice(0, 400) + '</div>';
@@ -467,7 +476,7 @@
         }
         var mode = H.slots[0] && H.slots[0].mode;
         html += '<div>' + ['friendly', 'safeframe', 'none'].map(function (m) { return link(m, { frame: m }, m === mode); }).join('') +
-          link(noFormat ? 'with format JS' : 'without format JS', { noformat: noFormat ? null : '1' }) +
+          link(noFormat ? 'with format JS/CSS' : 'without format JS/CSS', { noformat: noFormat ? null : '1' }) +
           '<a href="/test.html">test.html</a></div>';
       }
       el.innerHTML = html;

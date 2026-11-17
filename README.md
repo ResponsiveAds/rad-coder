@@ -38,9 +38,9 @@ npx rad-coder https://studio.responsiveads.com/creatives/697b80fcc6e904025f5147a
 6. **Watches Studio** - Warns you if someone edits the creative's custom JS in Studio while
    you work, so you never paste a stale copy over their changes ([see below](#studio-sync))
 
-7. **Format JS** - Pulls the format's Custom JS into `format.js` when the creative has one,
-   applies it on the test page like a live tag would, and guards it like `custom.js`
-   ([see below](#format-js))
+7. **Format JS and CSS** - Pulls the format's Custom JS into `format.js` and its Custom CSS
+   into `format.css` when the creative has them, applies both on the test page like a live
+   tag would, and guards them like `custom.js` ([see below](#format-js))
 
 8. **Client test pages** - Test the creative and its format JS on a copy of the publisher's
    page, in a GPT friendly iframe or a GAM SafeFrame ([see below](#client-test-pages))
@@ -68,13 +68,13 @@ The CLI auto-detects the creative from `.rad-coder.json` (or the folder name). Y
 ### Options
 
 ```bash
-npx rad-coder <id> --reset       # Overwrite local custom.js and format.js with the Studio versions
+npx rad-coder <id> --reset       # Overwrite local custom.js, format.js and format.css with the Studio versions
 npx rad-coder <id> --fresh       # Delete folder and start from scratch (keeps pages/ and the Studio archive)
 npx rad-coder <id> --editor=cursor  # Use a specific editor
 npx rad-coder <id> --no-editor   # Don't auto-open editor
 npx rad-coder <id> --port=3100   # Preferred starting port (falls back if busy)
 npx rad-coder <id> --no-ui       # Non-interactive mode for automation/agent harnesses
-npx rad-coder <id> --no-sync-check  # Skip comparing local custom.js / format.js against Studio
+npx rad-coder <id> --no-sync-check  # Skip comparing local custom.js / format.js / format.css against Studio
 npx rad-coder <id> --flowline=sidebar  # Start on a flowline (id, or part of its name)
 npx rad-coder <id> --page=atlantic     # Open pages/atlantic.html instead of test.html
 npx rad-coder <id> --new-page=atlantic # Create pages/atlantic.html from the template and open it
@@ -105,8 +105,8 @@ start (the old one is backed up in `.rad-coder/backups/`). A copy with your own 
 - **Zero configuration** - Just provide a creative ID
 - **Auto-detection** - Extracts flowline, sizes, and settings from Studio
 - **Hot-reload** - Instant feedback when you save changes
-- **Studio sync guard** - Detects when Studio and your local `custom.js` / `format.js` have drifted apart
-- **Format JS** - Edit a format's Custom JS locally and see it on the test page
+- **Studio sync guard** - Detects when Studio and your local `custom.js` / `format.js` / `format.css` have drifted apart
+- **Format JS and CSS** - Edit a format's Custom JS and Custom CSS locally and see them on the test page
 - **Client test pages** - Friendly iframe and SafeFrame emulation for publisher page mimics
 - **AI-ready** - Includes documentation for AI coding assistants
 - **Cross-platform** - Works on macOS, Linux, and Windows
@@ -152,12 +152,15 @@ next Studio check and records the new base automatically.
 ├── custom.remote.js       Studio's version — only present during a conflict
 ├── format.js              the format's Custom JS — only when the creative has one
 ├── format.remote.js       Studio's format JS — only present during a conflict
+├── format.css             the format's Custom CSS — only when the creative has one
+├── format.remote.css      Studio's format CSS — only present during a conflict
 ├── pages/                 client test pages (yours; kept by --fresh)
 └── .rad-coder/
     ├── base.js            the custom JS local and Studio last agreed on
     ├── history/<ts>.js    every distinct custom JS ever seen in Studio (last 50)
     ├── format/            the same base + history for format.js
-    └── backups/<ts>.js    custom-*.js / format-*.js before rad-coder overwrote them (last 20 each)
+    ├── format-css/        the same base + history for format.css
+    └── backups/           custom-*.js / format-*.js / format-*.css before rad-coder overwrote them (last 20 each)
 ```
 
 `history/` is the safety net: if a Studio version is ever lost, it is recoverable here.
@@ -202,6 +205,32 @@ When any flowline of the creative has format JS, rad-coder pulls it into **`form
 - To go live, paste `format.js` into Format → Custom JS of that flowline in Studio (and of each
   identical copy). If the format is shared with other creatives, rad-coder warns you: pasting
   changes every creative that uses it.
+
+## Format CSS
+
+A format can also carry Custom CSS (Format → Custom CSS). Studio appends it, as written, to
+the format's published stylesheet `rad-fl-<flowlineId>.css`, which Radical loads into the
+page that holds the ad (not in a SafeFrame). It is the place for the placement's styles, so
+the format JS only has to toggle classes.
+
+rad-coder keeps it in **`format.css`**, next to `format.js`:
+
+- It belongs to the same flowline as `format.js`, and to every other flowline whose Studio
+  format CSS is identical. No format CSS in Studio? No file is created; start one from
+  `http://localhost:3000/rad/templates/format.css`.
+- The test page and the client test pages get the format's stylesheet from the dev server
+  (`/rad/flowlines/<id>/rad-fl-<id>.css`): the published file, with Studio's Custom CSS
+  replaced by your local `format.css`. Saving the file reloads the page. `?noformat=1`
+  leaves the format CSS out, like the format JS.
+- The published file is minified as one piece, so Studio's Custom CSS is recognised by its
+  content: it starts at the first rule that is not scoped to `.rad-fl-<flowlineId>`. Custom
+  rules scoped to that class which come before it stay in the served stylesheet; your local
+  file follows them, so its declarations still win.
+- Same Studio sync guard: base and history in `.rad-coder/format-css/`, `format.remote.css` on
+  a conflict, and menu items **Diff format.css vs Studio** / **Pull format.css from Studio**.
+  Studio turns double quotes in the CSS into single quotes; the comparison ignores that.
+- To go live, paste `format.css` into Format → Custom CSS of that flowline in Studio (and of
+  each identical copy).
 
 ## Client test pages
 
@@ -266,13 +295,15 @@ The dev server exposes:
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /api/config` | creative config fetched from Studio (flowline, sizes, `customjs`, `format`) |
+| `GET /api/config` | creative config fetched from Studio (flowline, sizes, `customjs`, `format`, `format.css`) |
 | `GET /api/custom-js` | the current contents of your local `custom.js` |
-| `GET /api/sync-status` | local-vs-Studio sync `state`, hashes, and last check time for custom.js; the same for format.js under `format` |
+| `GET /api/sync-status` | local-vs-Studio sync `state`, hashes, and last check time for custom.js; the same for format.js under `format` and format.css under `formatCss` |
 | `GET /api/format-js?flowline=<id>` | the format JS that flowline renders with: `code`, `source` (`local` / `studio` / `none`), and which flowlines `format.js` belongs to |
+| `GET /api/format-css?flowline=<id>` | the format CSS that flowline renders with: `code`, `source` (`local` / `studio` / `none`) |
+| `GET /rad/flowlines/<id>/rad-fl-<id>.css` | the format's stylesheet as the test pages load it: published rules + the local `format.css` (`/rad/flowlines-plain/…` without format CSS) |
 | `GET /api/pages` | the client test pages in `pages/` |
 | `GET /pages/<name>.html` | a client test page (with hot reload injected) |
-| `GET /rad/templates/page.html`, `/rad/templates/format.js` | starter files to copy into the project |
+| `GET /rad/templates/page.html`, `/rad/templates/format.js`, `/rad/templates/format.css` | starter files to copy into the project |
 
 See the generated `AGENTS.md` file for complete Radical API documentation, including:
 

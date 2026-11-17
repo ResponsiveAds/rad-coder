@@ -39,7 +39,7 @@ Only the hook *registrations* belong inside the guard; function declarations can
 
 ## Nothing reloads when custom.js is saved
 
-- The dev server watches `custom.js`, `format.js` and `pages/` **in the directory it was
+- The dev server watches `custom.js`, `format.js`, `format.css` and `pages/` **in the directory it was
   started from**. Confirm you're editing the same file (`http://localhost:3000/api/custom-js`
   shows what the server sees).
 - The browser tab may have lost its WebSocket; reload the test page manually once.
@@ -84,7 +84,20 @@ switch the DevTools frame context to the ad iframe first.
   (`source` is `local`, `studio` or `none`). Only the flowlines in `format.appliesTo` use
   `format.js`.
 - Two copies run by design (creative window + the tag's window). The first one must mark
-  the creative window so the second one stands down — see "Format JS and client test pages"
+  the creative window so the second one stands down — see "Format JS, format CSS and client test pages"
   in AGENTS.md.
 - In a SafeFrame (`?frame=safeframe` on a client page) only the copy in the tag's window
   runs, and the publisher page cannot be touched.
+
+## Format CSS has no effect
+
+- Check which CSS the flowline gets: `curl -s "http://localhost:3000/api/format-css?flowline=<id>"`
+  (`source` is `local`, `studio` or `none`). Only the flowlines in `format.css.appliesTo`
+  (`/api/config`) use `format.css`.
+- Read the stylesheet the page loads: `curl -s http://localhost:3000/rad/flowlines/<id>/rad-fl-<id>.css`.
+  `format.css` is at the end. The generated rules before it are mostly `!important` on
+  `.rad-fl-<id>`: a rule only wins with `!important` and a more specific selector.
+- The page must load that stylesheet from the dev server. An old `pages/*.html` that sets
+  its own `flSource` in `data-options`, or links a copy of the CSS, bypasses it.
+- In a SafeFrame Radical does not load the flowline stylesheet: no format CSS applies.
+- `?noformat=1` leaves the format CSS out on purpose.

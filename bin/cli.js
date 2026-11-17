@@ -216,9 +216,9 @@ if (!creativeId) {
   console.log('  --port=<number>  Preferred starting port (default: 3000)');
   console.log('  --no-editor      Don\'t auto-open code editor');
   console.log('  --no-ui          Non-interactive mode (no prompts/menu/browser/editor)');
-  console.log('  --reset          Overwrite local custom.js and format.js with the Studio versions');
+  console.log('  --reset          Overwrite local custom.js, format.js and format.css with the Studio versions');
   console.log('  --fresh          Delete local folder and start from scratch');
-  console.log('  --no-sync-check  Skip comparing local custom.js / format.js against Studio');
+  console.log('  --no-sync-check  Skip comparing local custom.js / format.js / format.css against Studio');
   console.log('  --flowline=<x>   Start on this flowline (id, or part of its name)');
   console.log('  --page=<name>    Open a client test page from pages/ instead of test.html');
   console.log('  --new-page=<n>   Create pages/<n>.html from the client page template and open it');
@@ -273,12 +273,13 @@ async function seedCustomJs(userDir, customJsPath, remote, hasRemote) {
 const LABELS = {
   custom: { file: 'custom.js', what: 'custom JS', remote: 'custom.remote.js' },
   format: { file: 'format.js', what: 'format JS', remote: 'format.remote.js' },
+  formatCss: { file: 'format.css', what: 'format CSS', remote: 'format.remote.css' },
 };
 
 function printDiff(userDir, local, remote, kind = 'custom') {
   const { file } = LABELS[kind];
   console.log('');
-  console.log(sync.renderDiff(userDir, local, remote, `local-${file}`, `studio-${file}`));
+  console.log(sync.renderDiff(userDir, local, remote, `local-${file}`, `studio-${file}`, kind));
   console.log('');
 }
 
@@ -296,11 +297,23 @@ function seedFormatJs(userDir, remote, ownerName) {
 }
 
 /**
- * Decide what a local file (custom.js or format.js) should be, comparing it
+ * Seed format.css on a first run: the owner flowline's format CSS from Studio.
+ * Like format.js, nothing is created when Studio has none.
+ * @returns {string} 'creative' or 'none'
+ */
+function seedFormatCss(userDir, remote, ownerName) {
+  if (!remote || !remote.trim()) return 'none';
+  fs.writeFileSync(path.join(userDir, 'format.css'), remote, 'utf-8');
+  console.log(`  Created format.css (format CSS of flowline "${ownerName}" from Studio)`);
+  return 'creative';
+}
+
+/**
+ * Decide what a local file (custom.js, format.js or format.css) should be, comparing it
  * against the version currently in Studio. See server/sync.js for why the
  * comparison is three-way.
  *
- * @param {'custom'|'format'} kind
+ * @param {'custom'|'format'|'formatCss'} kind
  * @param {string} userDir
  * @param {?string} remote  Studio's current version
  * @param {Function} seed   creates the file on a first run; returns 'creative' | 'template' | 'none'
@@ -348,7 +361,7 @@ async function resolveCode(kind, userDir, remote, seed) {
   }
 
   const base = sync.readBase(userDir, kind);
-  const status = sync.classify({ local, remote, base });
+  const status = sync.classify({ local, remote, base, kind });
 
   switch (status.state) {
     case 'in-sync':
@@ -362,7 +375,7 @@ async function resolveCode(kind, userDir, remote, seed) {
       if (!hasRemote) {
         console.log(`  Using existing ${L.file} — Studio has no ${L.what} yet`);
       } else {
-        console.log(`  Using existing ${L.file} — local edits not in Studio yet (local vs Studio: ${sync.diffSummary(remote, local)})`);
+        console.log(`  Using existing ${L.file} — local edits not in Studio yet (local vs Studio: ${sync.diffSummary(remote, local, kind)})`);
       }
       console.log(`    Studio is only updated when you paste ${L.file} into ${sync.kindInfo(kind).studioField}`);
       return { state: status.state, baseSource: 'unchanged' };
@@ -389,7 +402,7 @@ async function resolveRemoteAhead(kind, userDir, filePath, local, remote) {
 
   console.log('');
   console.log(`  ↓ Studio has a NEWER ${L.what} than your local ${L.file}.`);
-  console.log(`    Your local ${L.file} has no changes of its own (${hasRemote ? `Studio vs local: ${sync.diffSummary(local, remote)}` : `Studio cleared its ${L.what}`})`);
+  console.log(`    Your local ${L.file} has no changes of its own (${hasRemote ? `Studio vs local: ${sync.diffSummary(local, remote, kind)}` : `Studio cleared its ${L.what}`})`);
   if (archived) {
     console.log(`    Studio version archived to ${sync.relative(userDir, archived)}`);
   }
@@ -449,7 +462,7 @@ async function resolveConflict(kind, userDir, filePath, local, remote, status) {
   if (archived) {
     console.log(`        archived copy   → ${sync.relative(userDir, archived)}`);
   }
-  console.log(`        Studio vs local → ${sync.diffSummary(local, remote)}`);
+  console.log(`        Studio vs local → ${sync.diffSummary(local, remote, kind)}`);
   console.log('');
 
   if (noUiFlag) {
@@ -494,17 +507,18 @@ async function resolveConflict(kind, userDir, filePath, local, remote, status) {
 }
 
 /**
- * Which flowline format.js belongs to (see server/formats.js):
- * the one recorded last time, else picked from Studio, else — when a format.js
- * already exists without any format JS in Studio — the selected flowline.
+ * Which flowline format.js and format.css belong to (see server/formats.js):
+ * the one recorded last time, else picked from Studio, else — when a format.js or
+ * format.css already exists without any format code in Studio — the selected flowline.
  */
 function resolveFormatOwner(userDir, config, previousConfig) {
   const ids = config.allFlowlines.map(f => f.id);
   const previous = previousConfig.format && previousConfig.format.flowlineId;
   if (previous && ids.includes(previous)) return previous;
-  const picked = formats.pickOwner(ids, config.formats || {}, config.flowlineId);
+  const picked = formats.pickOwner(ids, config.formats || {}, config.flowlineId, config.formatCss || {});
   if (picked) return picked;
-  return fs.existsSync(path.join(userDir, 'format.js')) ? config.flowlineId : null;
+  const hasLocal = ['format.js', 'format.css'].some(f => fs.existsSync(path.join(userDir, f)));
+  return hasLocal ? config.flowlineId : null;
 }
 
 /** pages/<name>.html for --page / --new-page values like "x", "x.html", "pages/x.html" */
@@ -609,12 +623,15 @@ async function main() {
   if (freshFlag && fs.existsSync(userDir)) {
     const preserved = sync.takeHistory(userDir, 'custom');
     const preservedFormat = sync.takeHistory(userDir, 'format');
+    const preservedFormatCss = sync.takeHistory(userDir, 'formatCss');
     const keptPages = takePages(userDir);
     fs.rmSync(userDir, { recursive: true, force: true });
     fs.mkdirSync(userDir);
     isNewProject = true;
     console.log(`  Fresh start: deleted and recreated ./${creativeId}`);
-    const restored = sync.restoreHistory(userDir, preserved, 'custom') + sync.restoreHistory(userDir, preservedFormat, 'format');
+    const restored = sync.restoreHistory(userDir, preserved, 'custom')
+      + sync.restoreHistory(userDir, preservedFormat, 'format')
+      + sync.restoreHistory(userDir, preservedFormatCss, 'formatCss');
     if (restored > 0) {
       console.log(`  Kept ${restored} archived Studio version(s) in ${sync.SYNC_DIR}/`);
     }
@@ -653,8 +670,10 @@ async function main() {
   const syncResult = await resolveCode('custom', userDir, config.customjs,
     () => seedCustomJs(userDir, path.join(userDir, 'custom.js'), config.customjs, !!(config.customjs && config.customjs.trim())));
 
-  // Same for format.js — the format JS of one flowline (see server/formats.js)
+  // Same for format.js and format.css — the format JS and format CSS of one
+  // flowline (see server/formats.js)
   let formatResult = null;
+  let formatCssResult = null;
   const ownerId = resolveFormatOwner(userDir, config, previousConfig);
   if (ownerId) {
     const owner = config.allFlowlines.find(f => f.id === ownerId);
@@ -663,16 +682,25 @@ async function main() {
       flowlineId: owner.id,
       flowlineName: owner.name,
       appliesTo: formats.appliesTo(owner.id, ids, config.formats || {}),
+      cssAppliesTo: formats.appliesTo(owner.id, ids, config.formatCss || {}, 'formatCss'),
       isCreativeSpecific: owner.isCreativeSpecific !== false,
     };
     const remoteFormat = (config.formats || {})[owner.id] || null;
     formatResult = await resolveCode('format', userDir, remoteFormat, () => seedFormatJs(userDir, remoteFormat, owner.name));
-    if (formatResult.state === 'none' && !fs.existsSync(path.join(userDir, 'format.js'))) {
+    const hasFormatJs = formatResult.state !== 'none' || fs.existsSync(path.join(userDir, 'format.js'));
+    if (!hasFormatJs) formatResult = null;
+
+    const remoteCss = (config.formatCss || {})[owner.id] || null;
+    formatCssResult = await resolveCode('formatCss', userDir, remoteCss, () => seedFormatCss(userDir, remoteCss, owner.name));
+    const hasFormatCss = formatCssResult.state !== 'none' || fs.existsSync(path.join(userDir, 'format.css'));
+    if (!hasFormatCss) formatCssResult = null;
+
+    if (!hasFormatJs && !hasFormatCss) {
       config.format = null;
-      formatResult = null;
     } else if (!config.format.isCreativeSpecific) {
-      console.log('  ⚠ format.js belongs to a format SHARED with other creatives —');
-      console.log('    pasting it into Studio (Format → Custom JS) changes every creative that uses it');
+      const files = [hasFormatJs && 'format.js', hasFormatCss && 'format.css'].filter(Boolean).join(' and ');
+      console.log(`  ⚠ ${files} belong${hasFormatJs && hasFormatCss ? '' : 's'} to a format SHARED with other creatives —`);
+      console.log('    pasting into Studio (Format → Custom JS / Custom CSS) changes every creative that uses it');
     }
   }
 
@@ -719,12 +747,12 @@ async function main() {
   // Save .rad-coder.json config for future no-arg runs
   const syncRecord = (kind, result, studioCode, previous) => ({
     state: result.state,
-    baseHash: sync.hash(sync.readBase(userDir, kind)),
+    baseHash: sync.hash(sync.readBase(userDir, kind), kind),
     baseSource: result.baseSource === 'unchanged'
       ? (previous && previous.baseSource) || 'studio'
       : result.baseSource,
-    localHash: sync.hash(sync.readLocal(userDir, kind)),
-    studioHash: sync.hash(studioCode),
+    localHash: sync.hash(sync.readLocal(userDir, kind), kind),
+    studioHash: sync.hash(studioCode, kind),
     studioCheckedAt: new Date().toISOString()
   });
 
@@ -739,8 +767,14 @@ async function main() {
     format: config.format
       ? {
         ...config.format,
-        sync: syncRecord('format', formatResult, (config.formats || {})[config.format.flowlineId],
-          previousConfig.format && previousConfig.format.sync),
+        sync: formatResult
+          ? syncRecord('format', formatResult, (config.formats || {})[config.format.flowlineId],
+            previousConfig.format && previousConfig.format.sync)
+          : null,
+        cssSync: formatCssResult
+          ? syncRecord('formatCss', formatCssResult, (config.formatCss || {})[config.format.flowlineId],
+            previousConfig.format && previousConfig.format.cssSync)
+          : null,
       }
       : null
   };

@@ -30,3 +30,5 @@ package-lock.json
 # rad-coder project state (created when testing inside the repo)
 .rad-coder/
 custom.remote.js
+format.remote.js
+format.remote.css
