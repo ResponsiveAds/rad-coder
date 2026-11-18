@@ -1,0 +1,113 @@
+/* ------------------------------------------------------------------
+ * Sidekick Drawer / Adhesion Pushdown — Format CSS (Studio: Format → Custom CSS)
+ * Flowline: 'Closed Drawer - Desktop' 6aebab5e3e6ca431feae87cf
+ * Goes together with the Format JS (format.js), which only toggles classes:
+ *
+ *   on <html>
+ *     rad-atl-drawer--drawer     the ad is the drawer on the right edge
+ *     rad-atl-drawer--adhesion   the ad is the adhesion at the bottom
+ *     rad-atl-drawer--open       open state (with either of the above)
+ *     rad-atl-drawer--h90|h60|h50  closed height of the adhesion layout in use
+ *     rad-atl-drawer--tight      the narrowed page is below the nav's 1296px breakpoint
+ *   on Radical's iframe container      rad-atl-drawer
+ *   on the publisher's slot elements   rad-atl-drawer-slot  (#incontent1 … <gpt-ad>)
+ *
+ * Radical loads this sheet into the publisher page (friendly iframe / tag in page).
+ * The sizes below must match the DRAWER and ADHESION tables in format.js.
+ *
+ * Local testing: rad-coder has no format CSS of its own, so
+ * pages/atlantic-look-closer.html links this file directly.
+ * ------------------------------------------------------------------ */
+
+/* --- how much room the ad takes ----------------------------------------
+ * Custom properties, so the publisher's 'sign in' bar (inside a shadow root, out
+ * of reach for this sheet) can follow them: format.js points its margins at them. */
+html.rad-atl-drawer--drawer { --rad-atl-drawer-right: 100px; }
+html.rad-atl-drawer--drawer.rad-atl-drawer--open { --rad-atl-drawer-right: 300px; }
+
+html.rad-atl-drawer--adhesion.rad-atl-drawer--h90 { --rad-atl-drawer-bottom: 90px; }
+html.rad-atl-drawer--adhesion.rad-atl-drawer--h60 { --rad-atl-drawer-bottom: 60px; }
+html.rad-atl-drawer--adhesion.rad-atl-drawer--h50 { --rad-atl-drawer-bottom: 50px; }
+html.rad-atl-drawer--adhesion.rad-atl-drawer--h90.rad-atl-drawer--open { --rad-atl-drawer-bottom: 180px; }
+html.rad-atl-drawer--adhesion.rad-atl-drawer--h60.rad-atl-drawer--open { --rad-atl-drawer-bottom: 120px; }
+html.rad-atl-drawer--adhesion.rad-atl-drawer--h50.rad-atl-drawer--open { --rad-atl-drawer-bottom: 100px; }
+
+/* --- the page gives up that room, so the ad never covers it -------------- */
+html.rad-atl-drawer--drawer {
+  padding-right: var(--rad-atl-drawer-right, 0px) !important;
+  box-sizing: border-box !important;
+}
+html.rad-atl-drawer--adhesion body {
+  padding-bottom: var(--rad-atl-drawer-bottom, 0px) !important;
+}
+
+/* The site nav has no side padding from a 1296px viewport up (its 1280px content is
+ * centred by auto margins). A page narrowed below that still counts as 'wide' for the
+ * publisher's media queries: give the nav its own narrow-screen padding back. */
+html.rad-atl-drawer--tight #main-navigation [class*='Nav_flexContainer'],
+html.rad-atl-drawer--tight #main-navigation [class*='IssueNav_module'] {
+  padding-left: 16px !important;
+  padding-right: 16px !important;
+  box-sizing: border-box !important;
+}
+
+/* --- the in-content slot the ad was served into takes no room ------------
+ * Not display:none: that would hide the pinned ad inside it. */
+html .rad-atl-drawer-slot.rad-atl-drawer-slot {
+  height: 0 !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  background: none !important;
+  overflow: visible !important;
+  z-index: 5999000 !important;   /* above the article, below the site nav (5999999) */
+}
+html .rad-atl-drawer-slot.rad-atl-drawer-slot::before,
+html .rad-atl-drawer-slot.rad-atl-drawer-slot::after {
+  display: none !important;
+}
+
+/* --- the ad itself ---------------------------------------------------------
+ * The selectors carry <html> + two classes on purpose: they have to outrank the
+ * format's generated rules (.rad-fl-<id> { position: static !important; … } and
+ * .rad-fl-<id>.nedit iframe / .rad-fl-<id> iframe { max-width: 100px !important; }). */
+html.rad-atl-drawer--drawer .rad-atl-drawer,
+html.rad-atl-drawer--adhesion .rad-atl-drawer {
+  position: fixed !important;
+  z-index: 5999000 !important;
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: none !important;
+  max-height: none !important;
+  overflow: hidden !important;
+}
+html.rad-atl-drawer--drawer .rad-atl-drawer {
+  top: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: auto !important;
+  width: var(--rad-atl-drawer-right, 0px) !important;
+  height: 100% !important;
+}
+html.rad-atl-drawer--adhesion .rad-atl-drawer {
+  top: auto !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  height: var(--rad-atl-drawer-bottom, 0px) !important;
+}
+html.rad-atl-drawer--drawer .rad-atl-drawer.rad-atl-drawer > iframe,
+html.rad-atl-drawer--adhesion .rad-atl-drawer.rad-atl-drawer > iframe {
+  position: static !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+}

@@ -1,0 +1,46 @@
+{
+  "creativeId": "6aeba9383e6ca431feae8794",
+  "flowlineId": "6aebab5e3e6ca431feae87cf",
+  "flowlineName": "Closed Drawer - Desktop",
+  "createdAt": "2026-11-18T07:29:56.165Z",
+  "updatedAt": "2026-11-18T07:29:56.165Z",
+  "agentsMd": {
+    "hash": "201dc4136186",
+    "templateHash": "201dc4136186"
+  },
+  "sync": {
+    "state": "local-ahead",
+    "baseHash": null,
+    "baseSource": "studio",
+    "localHash": "ab12ea82ced5",
+    "studioHash": null,
+    "studioCheckedAt": "2026-11-18T07:29:56.165Z"
+  },
+  "format": {
+    "flowlineId": "6aebab5e3e6ca431feae87cf",
+    "flowlineName": "Closed Drawer - Desktop",
+    "appliesTo": [
+      "6aebab5e3e6ca431feae87cf"
+    ],
+    "cssAppliesTo": [
+      "6aebab5e3e6ca431feae87cf"
+    ],
+    "isCreativeSpecific": true,
+    "sync": {
+      "state": "in-sync",
+      "baseHash": "5f74471f8783",
+      "baseSource": "studio",
+      "localHash": "5f74471f8783",
+      "studioHash": "5f74471f8783",
+      "studioCheckedAt": "2026-11-18T07:29:56.166Z"
+    },
+    "cssSync": {
+      "state": "in-sync",
+      "baseHash": "fbfa164fbbfe",
+      "baseSource": "studio",
+      "localHash": "fbfa164fbbfe",
+      "studioHash": "fbfa164fbbfe",
+      "studioCheckedAt": "2026-11-18T07:29:56.166Z"
+    }
+  }
+}
